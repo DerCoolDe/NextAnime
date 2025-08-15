@@ -99,7 +99,8 @@ export default function AnimeEditModal({
     if (e.key === "Escape") onClose();
   }
 
-  const isLinkModified = anime.originalSiteUrl && anime.siteUrl !== anime.originalSiteUrl;
+const originalUrl = anime.originalSiteUrl || anime.siteUrl || "";
+const isLinkModified = manualLink.trim() !== originalUrl.trim();
 
   return (
     <div
