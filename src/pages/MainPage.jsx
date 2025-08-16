@@ -638,7 +638,7 @@ export default function MainPage() {
           }
         `}</style>
       {/* Fixed Header Elements */}
-      <div
+      {/* <div
         style={{
           position: "fixed",
           top: 20,
@@ -655,7 +655,7 @@ export default function MainPage() {
         }}
       >
         {VERSION}
-      </div>
+      </div> */}
 
       {/* Responsive Container */}
       <div
@@ -690,7 +690,7 @@ export default function MainPage() {
           }}
         >
           <div style={{ display: "flex", gap: "15px", alignItems: "center" }}>
-            <button
+            {/* <button
               onClick={() => navigate("/cache")}
               title="View Cached Data"
               style={{
@@ -713,7 +713,7 @@ export default function MainPage() {
               }}
             >
               🧠 Cache
-            </button>
+            </button> */}
           </div>
 
           <div style={{ display: "flex", gap: "15px", alignItems: "center" }}>

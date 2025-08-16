@@ -155,7 +155,6 @@ export async function fetchNextAiringSchedules(limit = 10) {
   return data.Page.airingSchedules || [];
 }
 
-// ✅ Fixed: Removed invalid `sort` from airingSchedule
 export async function fetchAnimeWithSchedules(animeId) {
   const query = `
     query ($id: Int) {
