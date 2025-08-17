@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { loadCalendarList, saveCalendarList } from "../utils/storage";
 import WeekNavigation from "../components/WeekNavigation";
 import WeekView from "../components/WeekView";
+import UnwatchedList from "../components/UnwatchedList";
+
 
 function addDays(date, days) {
   const result = new Date(date);
@@ -44,6 +46,20 @@ export default function Calendar() {
     const saved = localStorage.getItem("showAllEpisodes");
     return saved === "true";
   });
+
+  const [showUnwatched, setShowUnwatched] = useState(false);
+  const [watchedState, setWatchedState] = useState({});
+
+  // Refresh watchedState from localStorage when opening the drawer
+  useEffect(() => {
+    if (!showUnwatched) return;
+    try {
+      const saved = localStorage.getItem("watchedAnime");
+      setWatchedState(saved ? JSON.parse(saved) : {});
+    } catch {
+      setWatchedState({});
+    }
+  }, [showUnwatched]);
 
   useEffect(() => {
     saveCalendarList(calendarList);
@@ -105,7 +121,7 @@ export default function Calendar() {
       // First, sort by favorite status (favorites first)
       if (a.favorited && !b.favorited) return -1;
       if (!a.favorited && b.favorited) return 1;
-      
+
       // Then, within each group (favorites and non-favorites), sort by airing time
       return a.airingAt - b.airingAt;
     });
@@ -221,8 +237,8 @@ export default function Calendar() {
                 const next = !prev;
                 localStorage.setItem("showAllEpisodes", next);
                 return next;
-                });
-               }}
+              });
+            }}
             style={{
               backgroundColor: showAll ? "#4caf50" : "#888",
               border: "none",
@@ -235,6 +251,22 @@ export default function Calendar() {
             title="Toggle showing all episodes or only next upcoming"
           >
             {showAll ? "Show Only Next Episodes" : "Show All Episodes"}
+          </button>
+
+          <button
+            onClick={() => setShowUnwatched(true)}
+            style={{
+              backgroundColor: "#7c4dff",
+              border: "none",
+              borderRadius: 6,
+              padding: "8px 16px",
+              cursor: "pointer",
+              fontWeight: "700",
+              color: "#fff",
+            }}
+            title="Show unwatched episodes"
+          >
+            🎯 Not Watched
           </button>
 
           <button
@@ -253,6 +285,46 @@ export default function Calendar() {
           </button>
         </div>
       </header>
+
+      {/* Unwatched Drawer */}
+      {showUnwatched && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(0,0,0,0.65)",
+            display: "flex",
+            justifyContent: "flex-end",
+            zIndex: 1500,
+          }}
+          onClick={() => setShowUnwatched(false)}
+        >
+          <div
+            style={{
+              width: "min(90vw, 420px)",
+              height: "100%",
+              backgroundColor: "#1e1e1e",
+              borderLeft: "1px solid #333",
+              padding: 16,
+              overflowY: "auto",
+              scrollbarWidth: "none",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0 }}>Not Watched</h3>
+              <button
+                onClick={() => setShowUnwatched(false)}
+                style={{ background: "#444", border: "none", color: "#fff", padding: "6px 10px", borderRadius: 6, cursor: "pointer" }}
+              >
+                ✕ Close
+              </button>
+            </div>
+
+            <UnwatchedList calendarList={calendarList} watchedState={watchedState} />
+          </div>
+        </div>
+      )}
 
       <WeekNavigation
         onPrevWeek={handlePrevWeek}

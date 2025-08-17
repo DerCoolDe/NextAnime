@@ -128,6 +128,7 @@ export default function MainPage() {
   const VERSION = "Beta v2.0.4";
 
   const [user, setUser] = useState(null);
+  const [username, setUsername] = useState(null);
   const prevWatchingListIds = useRef(new Set());
   const prevWatchingList = useRef([]);
 
@@ -136,10 +137,25 @@ export default function MainPage() {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
       if (firebaseUser) {
+        // Load username from Firestore, then sync lists
+        try {
+          const userDocRef = doc(db, "users", firebaseUser.uid);
+          const userDocSnap = await getDoc(userDocRef);
+          if (userDocSnap.exists()) {
+            const data = userDocSnap.data();
+            setUsername(data.username || null);
+          } else {
+            setUsername(null);
+          }
+        } catch (e) {
+          console.warn("Could not load username:", e);
+          setUsername(null);
+        }
         // On login, sync Firestore + localStorage lists
         await syncWatchingList(firebaseUser.uid);
       } else {
-        // Logged out: load localStorage only
+        // Logged out: clear username and load localStorage only
+        setUsername(null);
         const localList = loadWatchingList() || [];
         const fixedList = fixAiringTimes(localList);
         setWatchingList(fixedList);
@@ -770,7 +786,7 @@ export default function MainPage() {
               {user ? (
             <button
               onClick={() => navigate("/user")}
-              title={`Logged in as ${user.email}`}
+              title={`Logged in as ${username || user.email}`}
               style={{
                 backgroundColor: "rgba(97, 218, 251, 0.1)",
                 border: "1px solid rgba(97, 218, 251, 0.3)",
@@ -792,7 +808,7 @@ export default function MainPage() {
                 e.currentTarget.style.transform = "scale(1)";
               }}
             >
-              👤 {user.email?.split('@')[0]}
+              👤 {username || user.email?.split('@')[0]}
             </button>
           ) : (
             <button
