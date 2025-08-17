@@ -1,9 +1,7 @@
-import React, { useState } from "react";
+import React from "react";
 import AnimeCard from "./AnimeCard";
 
 export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAnime }) {
-  const [expandedDays, setExpandedDays] = useState({});
-
   if (!episodes || episodes.length === 0) return <p>No upcoming episodes available.</p>;
 
   // Helper function to get day name from timestamp
@@ -12,6 +10,7 @@ export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAni
     const today = new Date();
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
+    
     // Check if it's today
     if (date.toDateString() === today.toDateString()) {
       return "Today";
@@ -27,10 +26,10 @@ export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAni
   // Helper function to get date string
   const getDateString = (timestamp) => {
     const date = new Date(timestamp * 1000);
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
+    return date.toLocaleDateString('en-US', { 
+      month: 'short', 
       day: 'numeric',
-      year: 'numeric',
+      year: 'numeric'
     });
   };
 
@@ -39,6 +38,7 @@ export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAni
     const dayName = getDayName(episode.airingAt);
     const dateString = getDateString(episode.airingAt);
     const dayKey = `${dayName} - ${dateString}`;
+    
     if (!groups[dayKey]) {
       groups[dayKey] = [];
     }
@@ -57,14 +57,6 @@ export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAni
     const firstEpisodeB = episodesByDay[b][0];
     return firstEpisodeA.airingAt - firstEpisodeB.airingAt;
   });
-
-  // Show More/Less logic
-  const handleShowMore = (dayKey) => {
-    setExpandedDays((prev) => ({ ...prev, [dayKey]: true }));
-  };
-  const handleShowLess = (dayKey) => {
-    setExpandedDays((prev) => ({ ...prev, [dayKey]: false }));
-  };
 
   return (
     <div>
@@ -88,93 +80,53 @@ export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAni
       >
         🎬 Upcoming Episodes
       </h3>
-      {sortedDays.map((dayKey) => {
-        const dayEpisodes = episodesByDay[dayKey];
-        const isExpanded = expandedDays[dayKey];
-        const showEpisodes = isExpanded ? dayEpisodes : dayEpisodes.slice(0, 2);
-        return (
-          <div key={dayKey} style={{ marginBottom: "clamp(20px, 4vw, 35px)" }}>
-            <h4
-              style={{
-                backgroundColor: "rgba(42, 42, 42, 0.9)",
-                color: "#61dafb",
-                padding: "clamp(10px, 2vw, 15px) clamp(15px, 3vw, 25px)",
-                borderRadius: "clamp(6px, 1.5vw, 12px) clamp(6px, 1.5vw, 12px) 0 0",
-                margin: 0,
-                fontSize: "clamp(16px, 3vw, 20px)",
-                fontWeight: 600,
-                borderBottom: "2px solid #61dafb",
-                textAlign: "center",
-                backdropFilter: "blur(10px)",
-              }}
-            >
-              📅 {dayKey}
-            </h4>
-            <div
-              style={{
-                backgroundColor: "rgba(30, 30, 30, 0.8)",
-                borderRadius: "0 0 clamp(6px, 1.5vw, 12px) clamp(6px, 1.5vw, 12px)",
-                padding: "clamp(12px, 2.5vw, 20px)",
-                border: "1px solid rgba(97, 218, 251, 0.2)",
-                borderTop: "none",
-                backdropFilter: "blur(10px)",
-              }}
-            >
-              <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                {showEpisodes.map((ep) => (
-                  <li key={ep.media.id + ep.episode} style={{ marginBottom: "clamp(8px, 2vw, 15px)" }}>
-                    <AnimeCard
-                      episode={ep}
-                      watchingList={watchingList}
-                      onAddAnime={onAddAnime}
-                    />
-                  </li>
-                ))}
-              </ul>
-              {dayEpisodes.length > 4 && !isExpanded && (
-                <button
-                  onClick={() => handleShowMore(dayKey)}
-                  style={{
-                    margin: "10px auto 0 auto",
-                    display: "block",
-                    background: "linear-gradient(135deg, #61dafb, #6dd6ff)",
-                    color: "#000",
-                    fontWeight: "bold",
-                    border: "none",
-                    borderRadius: "8px",
-                    cursor: "pointer",
-                    fontSize: "clamp(14px, 2.5vw, 16px)",
-                    padding: "10px 24px",
-                    boxShadow: "0 4px 15px rgba(97, 218, 251, 0.3)",
-                  }}
-                >
-                  Show More
-                </button>
-              )}
-              {dayEpisodes.length > 4 && isExpanded && (
-                <button
-                  onClick={() => handleShowLess(dayKey)}
-                  style={{
-                    margin: "10px auto 0 auto",
-                    display: "block",
-                    background: "#232323",
-                    color: "#61dafb",
-                    fontWeight: "bold",
-                    border: "1px solid #61dafb",
-                    borderRadius: "8px",
-                    cursor: "pointer",
-                    fontSize: "clamp(14px, 2.5vw, 16px)",
-                    padding: "10px 24px",
-                    boxShadow: "0 4px 15px rgba(97, 218, 251, 0.1)",
-                  }}
-                >
-                  Show Less
-                </button>
-              )}
-            </div>
+      
+      {sortedDays.map((dayKey) => (
+        <div key={dayKey} style={{ 
+          marginBottom: "clamp(20px, 4vw, 35px)" 
+        }}>
+          <h4
+            style={{
+              backgroundColor: "rgba(42, 42, 42, 0.9)",
+              color: "#61dafb",
+              padding: "clamp(10px, 2vw, 15px) clamp(15px, 3vw, 25px)",
+              borderRadius: "clamp(6px, 1.5vw, 12px) clamp(6px, 1.5vw, 12px) 0 0",
+              margin: 0,
+              fontSize: "clamp(16px, 3vw, 20px)",
+              fontWeight: 600,
+              borderBottom: "2px solid #61dafb",
+              textAlign: "center",
+              backdropFilter: "blur(10px)",
+            }}
+          >
+            📅 {dayKey}
+          </h4>
+          <div
+            style={{
+              backgroundColor: "rgba(30, 30, 30, 0.8)",
+              borderRadius: "0 0 clamp(6px, 1.5vw, 12px) clamp(6px, 1.5vw, 12px)",
+              padding: "clamp(12px, 2.5vw, 20px)",
+              border: "1px solid rgba(97, 218, 251, 0.2)",
+              borderTop: "none",
+              backdropFilter: "blur(10px)",
+            }}
+          >
+            <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+              {episodesByDay[dayKey].map((ep) => (
+                <li key={ep.media.id + ep.episode} style={{ 
+                  marginBottom: "clamp(8px, 2vw, 15px)" 
+                }}>
+                  <AnimeCard 
+                    episode={ep} 
+                    watchingList={watchingList}
+                    onAddAnime={onAddAnime}
+                  />
+                </li>
+              ))}
+            </ul>
           </div>
-        );
-      })}
+        </div>
+      ))}
     </div>
   );
 }
