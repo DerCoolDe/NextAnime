@@ -1,7 +1,7 @@
 // src/components/AnimeCard.jsx
-import React, { useState, useEffect, memo } from "react";
+import React, { useState, useEffect } from "react";
 
-const AnimeCard = memo(function AnimeCard({ episode, watchingListIds, onAddAnime }) {
+export default function AnimeCard({ episode, watchingList, onAddAnime }) {
   const {
     media: { id, title, coverImage, genres, siteUrl },
     episode: epNumber,
@@ -10,11 +10,10 @@ const AnimeCard = memo(function AnimeCard({ episode, watchingListIds, onAddAnime
 
   const [countdown, setCountdown] = useState("");
 
-  // Use Set lookup instead of array.some() - O(1) instead of O(n)
-  // Add safety check for undefined watchingListIds
-  const isInWatchingList = watchingListIds?.has(id) || false;
+  // Check if anime is already in watching list
+  const isInWatchingList = watchingList.some((anime) => anime.id === id);
 
-  // Update countdown timer with reduced frequency for better performance
+  // Update countdown timer every second
   useEffect(() => {
     if (!airingAt) {
       setCountdown("");
@@ -46,8 +45,7 @@ const AnimeCard = memo(function AnimeCard({ episode, watchingListIds, onAddAnime
     }
 
     updateCountdown();
-    // Reduced frequency: update every 5 seconds instead of every second
-    const timer = setInterval(updateCountdown, 5000);
+    const timer = setInterval(updateCountdown, 1000);
     return () => clearInterval(timer);
   }, [airingAt]);
 
@@ -59,7 +57,6 @@ const AnimeCard = memo(function AnimeCard({ episode, watchingListIds, onAddAnime
 
   return (
     <div
-      className="anime-card"
       style={{
         display: "flex",
         background: "#232323ff",
@@ -68,8 +65,11 @@ const AnimeCard = memo(function AnimeCard({ episode, watchingListIds, onAddAnime
         padding: 15,
         alignItems: "center",
         gap: 20,
+        transition: "transform 0.2s ease",
         cursor: "default",
       }}
+      onMouseEnter={(e) => (e.currentTarget.style.transform = "scale(1.02)")}
+      onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}
       key={`${id}-${epNumber}`}
     >
       <a
@@ -144,6 +144,4 @@ const AnimeCard = memo(function AnimeCard({ episode, watchingListIds, onAddAnime
       </div>
     </div>
   );
-});
-
-export default AnimeCard;
+}

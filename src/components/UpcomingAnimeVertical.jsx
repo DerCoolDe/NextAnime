@@ -1,8 +1,10 @@
-import React, { useState, useMemo } from "react";
+import React, { useState } from "react";
 import AnimeCard from "./AnimeCard";
 
-export default function UpcomingAnimeVertical({ episodes, watchingListIds = new Set(), onAddAnime }) {
+export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAnime }) {
   const [expandedDays, setExpandedDays] = useState({});
+
+  if (!episodes || episodes.length === 0) return <p>No upcoming episodes available.</p>;
 
   // Helper function to get day name from timestamp
   const getDayName = (timestamp) => {
@@ -32,40 +34,29 @@ export default function UpcomingAnimeVertical({ episodes, watchingListIds = new 
     });
   };
 
-  // Memoize expensive calculations
-  const { episodesByDay, sortedDays } = useMemo(() => {
-    if (!episodes || episodes.length === 0) {
-      return { episodesByDay: {}, sortedDays: [] };
+  // Group episodes by day
+  const episodesByDay = episodes.reduce((groups, episode) => {
+    const dayName = getDayName(episode.airingAt);
+    const dateString = getDateString(episode.airingAt);
+    const dayKey = `${dayName} - ${dateString}`;
+    if (!groups[dayKey]) {
+      groups[dayKey] = [];
     }
+    groups[dayKey].push(episode);
+    return groups;
+  }, {});
 
-    // Group episodes by day
-    const grouped = episodes.reduce((groups, episode) => {
-      const dayName = getDayName(episode.airingAt);
-      const dateString = getDateString(episode.airingAt);
-      const dayKey = `${dayName} - ${dateString}`;
-      if (!groups[dayKey]) {
-        groups[dayKey] = [];
-      }
-      groups[dayKey].push(episode);
-      return groups;
-    }, {});
+  // Sort episodes within each day by airing time
+  Object.keys(episodesByDay).forEach(dayKey => {
+    episodesByDay[dayKey].sort((a, b) => a.airingAt - b.airingAt);
+  });
 
-    // Sort episodes within each day by airing time
-    Object.keys(grouped).forEach(dayKey => {
-      grouped[dayKey].sort((a, b) => a.airingAt - b.airingAt);
-    });
-
-    // Sort days chronologically
-    const sorted = Object.keys(grouped).sort((a, b) => {
-      const firstEpisodeA = grouped[a][0];
-      const firstEpisodeB = grouped[b][0];
-      return firstEpisodeA.airingAt - firstEpisodeB.airingAt;
-    });
-
-    return { episodesByDay: grouped, sortedDays: sorted };
-  }, [episodes]);
-
-  if (!episodes || episodes.length === 0) return <p>No upcoming episodes available.</p>;
+  // Sort days chronologically
+  const sortedDays = Object.keys(episodesByDay).sort((a, b) => {
+    const firstEpisodeA = episodesByDay[a][0];
+    const firstEpisodeB = episodesByDay[b][0];
+    return firstEpisodeA.airingAt - firstEpisodeB.airingAt;
+  });
 
   // Show More/Less logic
   const handleShowMore = (dayKey) => {
@@ -134,7 +125,7 @@ export default function UpcomingAnimeVertical({ episodes, watchingListIds = new 
                   <li key={ep.media.id + ep.episode} style={{ marginBottom: "clamp(8px, 2vw, 15px)" }}>
                     <AnimeCard
                       episode={ep}
-                      watchingListIds={watchingListIds}
+                      watchingList={watchingList}
                       onAddAnime={onAddAnime}
                     />
                   </li>
