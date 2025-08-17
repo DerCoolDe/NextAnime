@@ -9,7 +9,7 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { app } from "../firebase";
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import SavedAnimeHorizontal from "../components/SavedAnimeHorizontal";
 import UpcomingAnimeVertical from "../components/UpcomingAnimeVertical";
@@ -560,6 +560,8 @@ export default function MainPage() {
     return (a.airingAt || 0) - (b.airingAt || 0);
   });
 
+    const watchingListIds = useMemo(() => new Set(watchingList.map((a) => a.id)), [watchingList]);
+
   function areSetsEqual(a, b) {
     if (a.size !== b.size) return false;
     for (const item of a) if (!b.has(item)) return false;
@@ -651,6 +653,14 @@ export default function MainPage() {
           
           .anime-scroll-container::-webkit-scrollbar-thumb:hover {
             background: linear-gradient(90deg, #6dd6ff, #61dafb);
+          }
+
+          .anime-card {
+            transition: transform 0.2s ease !important;
+          }
+
+          .anime-card:hover {
+            transform: scale(1.02) !important;
           }
         `}</style>
       {/* Fixed Header Elements */}
@@ -986,7 +996,7 @@ export default function MainPage() {
           <div>
             <UpcomingAnimeVertical 
               episodes={episodes} 
-              watchingList={watchingList}
+              watchingList={watchingListIds}
               onAddAnime={addAnimeFromUpcoming}
             />
           </div>

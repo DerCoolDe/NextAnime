@@ -1,7 +1,7 @@
 // src/components/AnimeCard.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, memo } from "react";
 
-export default function AnimeCard({ episode, watchingList, onAddAnime }) {
+const AnimeCard = memo(function AnimeCard({ episode, watchingListIds, onAddAnime }) {
   const {
     media: { id, title, coverImage, genres, siteUrl },
     episode: epNumber,
@@ -10,10 +10,11 @@ export default function AnimeCard({ episode, watchingList, onAddAnime }) {
 
   const [countdown, setCountdown] = useState("");
 
-  // Check if anime is already in watching list
-  const isInWatchingList = watchingList.some((anime) => anime.id === id);
+  // Use Set lookup instead of array.some() - O(1) instead of O(n)
+  // Add safety check for undefined watchingListIds
+  const isInWatchingList = watchingListIds?.has(id) || false;
 
-  // Update countdown timer every second
+  // Update countdown timer with reduced frequency for better performance
   useEffect(() => {
     if (!airingAt) {
       setCountdown("");
@@ -45,7 +46,8 @@ export default function AnimeCard({ episode, watchingList, onAddAnime }) {
     }
 
     updateCountdown();
-    const timer = setInterval(updateCountdown, 1000);
+    // Reduced frequency: update every 5 seconds instead of every second
+    const timer = setInterval(updateCountdown, 5000);
     return () => clearInterval(timer);
   }, [airingAt]);
 
@@ -57,6 +59,7 @@ export default function AnimeCard({ episode, watchingList, onAddAnime }) {
 
   return (
     <div
+      className="anime-card"
       style={{
         display: "flex",
         background: "#232323ff",
@@ -65,11 +68,8 @@ export default function AnimeCard({ episode, watchingList, onAddAnime }) {
         padding: 15,
         alignItems: "center",
         gap: 20,
-        transition: "transform 0.2s ease",
         cursor: "default",
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.transform = "scale(1.02)")}
-      onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}
       key={`${id}-${epNumber}`}
     >
       <a
@@ -144,4 +144,6 @@ export default function AnimeCard({ episode, watchingList, onAddAnime }) {
       </div>
     </div>
   );
-}
+});
+
+export default AnimeCard;
