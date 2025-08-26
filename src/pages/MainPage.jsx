@@ -9,7 +9,7 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { app } from "../firebase";
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import SavedAnimeHorizontal from "../components/SavedAnimeHorizontal";
 import UpcomingAnimeVertical from "../components/UpcomingAnimeVertical";
@@ -43,6 +43,13 @@ import {
 // Firestore setup
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// Memoized helper functions
+const areSetsEqual = (a, b) => {
+  if (a.size !== b.size) return false;
+  for (const item of a) if (!b.has(item)) return false;
+  return true;
+};
 
 // Helper: load watching list from Firestore for given uid
 async function loadFirestoreWatchingList(uid) {
@@ -116,6 +123,113 @@ function fixAiringTimes(watchingList) {
   });
 }
 
+// Memoized CSS styles to prevent recreation
+const styles = {
+  container: {
+    minHeight: "100vh",
+    fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
+    color: "#eee",
+    backgroundColor: "#121212",
+    position: "relative",
+    overflowX: "hidden",
+  },
+  responsiveContainer: {
+    maxWidth: "1400px",
+    margin: "0 auto",
+    padding: "clamp(10px, 3vw, 30px)",
+    paddingTop: "80px",
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+    gap: "clamp(20px, 4vw, 40px)",
+  },
+  fixedHeader: {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "rgba(18, 18, 18, 0.95)",
+    backdropFilter: "blur(20px)",
+    borderBottom: "1px solid rgba(97, 218, 251, 0.2)",
+    zIndex: 1000,
+    padding: "10px 20px",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: "10px",
+  },
+  buttonBase: {
+    backgroundColor: "rgba(97, 218, 251, 0.1)",
+    border: "1px solid rgba(97, 218, 251, 0.3)",
+    borderRadius: "8px",
+    padding: "8px 12px",
+    fontSize: "clamp(16px, 2.5vw, 20px)",
+    cursor: "pointer",
+    color: "#61dafb",
+    transition: "all 0.3s ease",
+  },
+  duplicatePopup: {
+    position: "fixed",
+    top: "80px",
+    right: "20px",
+    backgroundColor: "rgba(255, 69, 58, 0.95)",
+    color: "white",
+    padding: "clamp(10px, 2vw, 15px) clamp(15px, 3vw, 25px)",
+    borderRadius: "8px",
+    boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
+    fontWeight: "700",
+    zIndex: 1000,
+    fontSize: "clamp(12px, 2vw, 14px)",
+    backdropFilter: "blur(10px)",
+    border: "1px solid rgba(255, 69, 58, 0.3)",
+  },
+  logoContainer: {
+    display: "flex",
+    justifyContent: "center",
+    alignItems: "center",
+    height: "64px",
+    overflow: "visible",
+  },
+  logo: {
+    height: "250px",
+    width: "auto",
+    transform: "scale(2.2)",
+    transformOrigin: "center center",
+    filter: "drop-shadow(0 2px 10px rgba(97, 218, 251, 0.3))",
+    userSelect: "none",
+    pointerEvents: "none",
+  },
+  addSection: {
+    backgroundColor: "rgba(40, 40, 40, 0.8)",
+    padding: "clamp(20px, 4vw, 30px)",
+    borderRadius: "16px",
+    textAlign: "center",
+    border: "1px solid rgba(97, 218, 251, 0.2)",
+    backdropFilter: "blur(10px)",
+  },
+  addButton: {
+    padding: "clamp(10px, 2vw, 15px) clamp(16px, 3vw, 24px)",
+    background: "linear-gradient(135deg, #61dafb, #6dd6ff)",
+    color: "#000",
+    fontWeight: "bold",
+    border: "none",
+    borderRadius: "8px",
+    cursor: "pointer",
+    fontSize: "clamp(14px, 2.5vw, 16px)",
+    transition: "all 0.3s ease",
+    boxShadow: "0 4px 15px rgba(97, 218, 251, 0.3)",
+  },
+  sectionTitle: {
+    textAlign: "center",
+    marginBottom: "clamp(20px, 4vw, 30px)",
+    fontSize: "clamp(20px, 4vw, 28px)",
+    fontWeight: 700,
+    color: "#61dafb",
+    textShadow: "0 2px 10px rgba(97, 218, 251, 0.3)",
+  }
+};
+
 export default function MainPage() {
   const [episodes, setEpisodes] = useState([]);
   const [watchingList, setWatchingList] = useState([]);
@@ -131,6 +245,57 @@ export default function MainPage() {
   const [username, setUsername] = useState(null);
   const prevWatchingListIds = useRef(new Set());
   const prevWatchingList = useRef([]);
+
+  // Debounced functions for better performance
+  const debouncedSaveWatchingList = useRef(null);
+  const debouncedSaveCalendarList = useRef(null);
+
+  useEffect(() => {
+    debouncedSaveWatchingList.current = debounce(saveWatchingList, 300);
+    debouncedSaveCalendarList.current = debounce(saveCalendarList, 300);
+  }, []);
+
+  // Debounce utility
+  function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+      const later = () => {
+        clearTimeout(timeout);
+        func(...args);
+      };
+      clearTimeout(timeout);
+      timeout = setTimeout(later, wait);
+    };
+  }
+
+  // Memoized sorted watching list
+  const sortedWatchingList = useMemo(() => {
+    return [...watchingList].sort((a, b) => {
+      // First, sort by favorite status (favorites first)
+      if (a.favorited && !b.favorited) return -1;
+      if (!a.favorited && b.favorited) return 1;
+      
+      // Then, within each group (favorites and non-favorites), sort by airing time
+      return (a.airingAt || 0) - (b.airingAt || 0);
+    });
+  }, [watchingList]);
+
+  // Memoized completed anime checker
+  const isAnimeCompleted = useCallback((anime) => {
+    // Check if anime status is FINISHED or if it has no next airing episode and all episodes are aired
+    if (anime.status === "FINISHED") return true;
+    
+    // If no next airing episode and we have episode count, check if all episodes are done
+    if (!anime.nextAiringEpisode && anime.episodes && anime.episodes > 0) {
+      // Check if the last episode in the airing schedule is the final episode
+      if (anime.fullAiringSchedule && anime.fullAiringSchedule.length > 0) {
+        const lastEpisode = anime.fullAiringSchedule[anime.fullAiringSchedule.length - 1];
+        return lastEpisode.episode >= anime.episodes;
+      }
+    }
+    
+    return false;
+  }, []);
 
   // Auth listener
   useEffect(() => {
@@ -167,7 +332,7 @@ export default function MainPage() {
   }, []);
 
   // Sync Firestore and localStorage watching lists without deleting local data
-  async function syncWatchingList(uid) {
+  const syncWatchingList = useCallback(async (uid) => {
     try {
       const firestoreList = await loadFirestoreWatchingList(uid);
       const localList = loadWatchingList() || [];
@@ -183,7 +348,7 @@ export default function MainPage() {
     } catch (e) {
       console.error("Error syncing watching list:", e);
     }
-  }
+  }, []);
 
   // On mount: if no user logged in yet, load localStorage list
   useEffect(() => {
@@ -218,8 +383,10 @@ export default function MainPage() {
     loadUpcoming();
   }, []);
 
-  // Fetch airing schedules for watching list (optimized with caching)
+  // Optimized fetch airing schedules effect with better dependency tracking
   useEffect(() => {
+    let isCancelled = false;
+
     async function loadSchedules() {
       if (watchingList.length === 0) return;
 
@@ -230,6 +397,8 @@ export default function MainPage() {
       try {
         // Use optimized query that includes full anime details
         const schedulesWithDetails = await fetchAiringSchedulesWithDetails([...currentIds]);
+        
+        if (isCancelled) return;
 
         setWatchingList((oldList) => {
           const updated = oldList.map((anime) => {
@@ -238,40 +407,55 @@ export default function MainPage() {
               // Cache the full anime details for future use
               setCachedAnimeDetails(anime.id, scheduleData.media);
               
-                             return {
-                 ...anime,
-                 episode: scheduleData.episode ?? anime.episode,
-                 airingAt: scheduleData.airingAt ?? anime.airingAt,
-                 // Update with fresh data if available
-                 title: scheduleData.media.title || anime.title,
-                 coverImage: scheduleData.media.coverImage || anime.coverImage,
-                 episodes: scheduleData.media.episodes || anime.episodes,
-                 status: scheduleData.media.status || anime.status,
-                 siteUrl: scheduleData.media.siteUrl || anime.siteUrl,
-                 genres: scheduleData.media.genres || anime.genres,
-                 fullAiringSchedule: scheduleData.media.airingSchedule?.nodes || anime.fullAiringSchedule,
-                 nextAiringEpisode: scheduleData.media.nextAiringEpisode || anime.nextAiringEpisode,
-               };
+              return {
+                ...anime,
+                episode: scheduleData.episode ?? anime.episode,
+                airingAt: scheduleData.airingAt ?? anime.airingAt,
+                // Update with fresh data if available
+                title: scheduleData.media.title || anime.title,
+                coverImage: scheduleData.media.coverImage || anime.coverImage,
+                episodes: scheduleData.media.episodes || anime.episodes,
+                status: scheduleData.media.status || anime.status,
+                siteUrl: scheduleData.media.siteUrl || anime.siteUrl,
+                genres: scheduleData.media.genres || anime.genres,
+                fullAiringSchedule: scheduleData.media.airingSchedule?.nodes || anime.fullAiringSchedule,
+                nextAiringEpisode: scheduleData.media.nextAiringEpisode || anime.nextAiringEpisode,
+              };
             }
             return anime;
           });
-          saveWatchingList(updated);
-          // Also update Firestore if logged in
-          if (user) {
-            saveFirestoreWatchingList(user.uid, updated);
+          
+          // Use debounced save to prevent excessive writes
+          if (debouncedSaveWatchingList.current) {
+            debouncedSaveWatchingList.current(updated);
           }
+          
+          // Also update Firestore if logged in (debounced)
+          if (user && !isCancelled) {
+            debounce(() => saveFirestoreWatchingList(user.uid, updated), 500)();
+          }
+          
           return updated;
         });
       } catch (err) {
-        console.error("Error fetching airing schedules:", err);
+        if (!isCancelled) {
+          console.error("Error fetching airing schedules:", err);
+        }
       }
     }
+    
     loadSchedules();
-  }, [watchingList, user]);
+    
+    return () => {
+      isCancelled = true;
+    };
+  }, [watchingList.map(a => a.id).join(','), user]); // More stable dependency
 
-  // Save calendarList when it changes
+  // Optimized calendar list save effect
   useEffect(() => {
-    saveCalendarList(calendarList);
+    if (debouncedSaveCalendarList.current) {
+      debouncedSaveCalendarList.current(calendarList);
+    }
   }, [calendarList]);
 
   // Sync calendar list with current favorite status from watching list
@@ -282,7 +466,9 @@ export default function MainPage() {
           const anime = watchingList.find(a => a.id === ep.id);
           return anime ? { ...ep, favorited: anime.favorited || false } : ep;
         });
-        saveCalendarList(updatedCalendar);
+        if (debouncedSaveCalendarList.current) {
+          debouncedSaveCalendarList.current(updatedCalendar);
+        }
         return updatedCalendar;
       });
     }
@@ -293,8 +479,31 @@ export default function MainPage() {
     prevWatchingList.current = watchingList;
   }, [watchingList]);
 
-  // Add anime by name from input field (optimized)
-  async function addAnime() {
+  // Memoized button hover handlers
+  const createButtonHoverHandlers = useCallback((hoverColor = "rgba(97, 218, 251, 0.2)") => ({
+    onMouseEnter: (e) => {
+      e.currentTarget.style.backgroundColor = hoverColor;
+      e.currentTarget.style.transform = "scale(1.05)";
+    },
+    onMouseLeave: (e) => {
+      e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.1)";
+      e.currentTarget.style.transform = "scale(1)";
+    }
+  }), []);
+
+  const addButtonHoverHandlers = useMemo(() => ({
+    onMouseEnter: (e) => {
+      e.currentTarget.style.transform = "translateY(-2px)";
+      e.currentTarget.style.boxShadow = "0 6px 20px rgba(97, 218, 251, 0.4)";
+    },
+    onMouseLeave: (e) => {
+      e.currentTarget.style.transform = "translateY(0)";
+      e.currentTarget.style.boxShadow = "0 4px 15px rgba(97, 218, 251, 0.3)";
+    }
+  }), []);
+
+  // Optimized add anime functions
+  const addAnime = useCallback(async () => {
     setError("");
     const searchName = String(addName || "").trim();
     if (!searchName) return;
@@ -345,10 +554,9 @@ export default function MainPage() {
       setError("Error fetching anime");
       console.error("Error in addAnime:", err);
     }
-  }
+  }, [addName, watchingList, user]);
 
-  // Add anime from upcoming anime list (optimized)
-  async function addAnimeFromUpcoming(animeName) {
+  const addAnimeFromUpcoming = useCallback(async (animeName) => {
     setError("");
     const searchName = String(animeName || "").trim();
     if (!searchName) return;
@@ -397,15 +605,17 @@ export default function MainPage() {
       setError("Error fetching anime");
       console.error("Error in addAnimeFromUpcoming:", err);
     }
-  }
+  }, [watchingList, user]);
 
-  function handleToggleCalendar(anime) {
+  const handleToggleCalendar = useCallback((anime) => {
     setCalendarList((prev) => {
       const isInCalendar = prev.some((ep) => ep.id === anime.id);
 
       if (isInCalendar) {
         const filtered = prev.filter((ep) => ep.id !== anime.id);
-        saveCalendarList(filtered);
+        if (debouncedSaveCalendarList.current) {
+          debouncedSaveCalendarList.current(filtered);
+        }
         return filtered;
       } else {
         const episodesToAdd = (anime.fullAiringSchedule || []).map((ep) => ({
@@ -418,13 +628,15 @@ export default function MainPage() {
         }));
 
         const updated = [...prev, ...episodesToAdd];
-        saveCalendarList(updated);
+        if (debouncedSaveCalendarList.current) {
+          debouncedSaveCalendarList.current(updated);
+        }
         return updated;
       }
     });
-  }
+  }, []);
 
-  function deleteAnime(id) {
+  const deleteAnime = useCallback((id) => {
     const filtered = watchingList.filter((a) => a.id !== id);
     setWatchingList(filtered);
     saveWatchingList(filtered);
@@ -435,23 +647,28 @@ export default function MainPage() {
 
     const filteredCalendar = calendarList.filter((a) => a.id !== id);
     setCalendarList(filteredCalendar);
-    saveCalendarList(filteredCalendar);
-  }
+    if (debouncedSaveCalendarList.current) {
+      debouncedSaveCalendarList.current(filteredCalendar);
+    }
+  }, [watchingList, user, calendarList]);
 
   // Open/close edit modal
-  function handleOpenEdit(anime) {
+  const handleOpenEdit = useCallback((anime) => {
     setEditTarget(anime);
-  }
-  function handleCloseEdit() {
+  }, []);
+  
+  const handleCloseEdit = useCallback(() => {
     setEditTarget(null);
-  }
+  }, []);
 
-  // Adjust release time helpers
-  function applyUpdateAndPersist(updatedList) {
+  // Optimized update and persist function
+  const applyUpdateAndPersist = useCallback((updatedList) => {
     setWatchingList(updatedList);
-    saveWatchingList(updatedList);
+    if (debouncedSaveWatchingList.current) {
+      debouncedSaveWatchingList.current(updatedList);
+    }
     if (user) {
-      saveFirestoreWatchingList(user.uid, updatedList);
+      debounce(() => saveFirestoreWatchingList(user.uid, updatedList), 500)();
     }
     // Also update calendar with adjusted times
     setCalendarList((prev) => {
@@ -466,12 +683,14 @@ export default function MainPage() {
           favorited: src.favorited || false,
         };
       });
-      saveCalendarList(updatedCalendar);
+      if (debouncedSaveCalendarList.current) {
+        debouncedSaveCalendarList.current(updatedCalendar);
+      }
       return updatedCalendar;
     });
-  }
+  }, [user]);
 
-  function withAdjustedSchedule(anime, newFirstTs) {
+  const withAdjustedSchedule = useCallback((anime, newFirstTs) => {
     // Compute delta between desired first upcoming ts and current first upcoming ts
     const now = Date.now() / 1000;
     let nextNode = null;
@@ -498,21 +717,21 @@ export default function MainPage() {
       originalAiringAt: anime.originalAiringAt ?? (anime.airingAt ?? null),
       originalFullAiringSchedule: anime.originalFullAiringSchedule ?? (anime.fullAiringSchedule || []),
     };
-  }
+  }, []);
 
-  function handleSaveReleaseTimestamp(id, newTsSeconds) {
+  const handleSaveReleaseTimestamp = useCallback((id, newTsSeconds) => {
     const updated = watchingList.map((a) => (a.id === id ? withAdjustedSchedule(a, newTsSeconds) : a));
     applyUpdateAndPersist(updated);
-  }
+  }, [watchingList, withAdjustedSchedule, applyUpdateAndPersist]);
 
-  function handleAdjustOffsetSeconds(id, offsetSeconds) {
+  const handleAdjustOffsetSeconds = useCallback((id, offsetSeconds) => {
     const target = watchingList.find((a) => a.id === id);
     if (!target) return;
     const newTs = (target.airingAt || Math.floor(Date.now() / 1000)) + offsetSeconds;
     handleSaveReleaseTimestamp(id, newTs);
-  }
+  }, [watchingList, handleSaveReleaseTimestamp]);
 
-  function handleResetReleaseTime(id) {
+  const handleResetReleaseTime = useCallback((id) => {
     const updated = watchingList.map((a) => {
       if (a.id !== id) return a;
       const baseSchedule = a.originalFullAiringSchedule || a.fullAiringSchedule || [];
@@ -525,17 +744,19 @@ export default function MainPage() {
       };
     });
     applyUpdateAndPersist(updated);
-  }
+  }, [watchingList, applyUpdateAndPersist]);
 
-  function toggleFavorite(id) {
+  const toggleFavorite = useCallback((id) => {
     const updated = watchingList.map((a) =>
       a.id === id ? { ...a, favorited: !a.favorited } : a
     );
     setWatchingList(updated);
-    saveWatchingList(updated);
+    if (debouncedSaveWatchingList.current) {
+      debouncedSaveWatchingList.current(updated);
+    }
 
     if (user) {
-      saveFirestoreWatchingList(user.uid, updated);
+      debounce(() => saveFirestoreWatchingList(user.uid, updated), 500)();
     }
 
     // Update calendar list to reflect favorite status changes
@@ -545,320 +766,145 @@ export default function MainPage() {
         const updatedCalendar = prev.map((ep) => 
           ep.id === id ? { ...ep, favorited: anime.favorited } : ep
         );
-        saveCalendarList(updatedCalendar);
+        if (debouncedSaveCalendarList.current) {
+          debouncedSaveCalendarList.current(updatedCalendar);
+        }
         return updatedCalendar;
       });
     }
-  }
+  }, [watchingList, user]);
 
-  const sortedWatchingList = [...watchingList].sort((a, b) => {
-    // First, sort by favorite status (favorites first)
-    if (a.favorited && !b.favorited) return -1;
-    if (!a.favorited && b.favorited) return 1;
-    
-    // Then, within each group (favorites and non-favorites), sort by airing time
-    return (a.airingAt || 0) - (b.airingAt || 0);
-  });
-
-  function areSetsEqual(a, b) {
-    if (a.size !== b.size) return false;
-    for (const item of a) if (!b.has(item)) return false;
-    return true;
-  }
-
-  // Helper function to check if anime is completed
-  function isAnimeCompleted(anime) {
-    // Check if anime status is FINISHED or if it has no next airing episode and all episodes are aired
-    if (anime.status === "FINISHED") return true;
-    
-    // If no next airing episode and we have episode count, check if all episodes are done
-    if (!anime.nextAiringEpisode && anime.episodes && anime.episodes > 0) {
-      // Check if the last episode in the airing schedule is the final episode
-      if (anime.fullAiringSchedule && anime.fullAiringSchedule.length > 0) {
-        const lastEpisode = anime.fullAiringSchedule[anime.fullAiringSchedule.length - 1];
-        return lastEpisode.episode >= anime.episodes;
-      }
-    }
-    
-    return false;
-  }
+  // Memoized navigation handlers
+  const navigationHandlers = useMemo(() => ({
+    toAnimeList: () => navigate("/animelist"),
+    toCalendar: () => navigate("/calendar"),
+    toUser: () => navigate("/user"),
+    toLogin: () => navigate("/login")
+  }), [navigate]);
 
   return (
-          <div
-        style={{
-          minHeight: "100vh",
-          fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
-          color: "#eee",
-          backgroundColor: "#121212",
-          position: "relative",
-          overflowX: "hidden",
-        }}
-      >
-        {/* Custom CSS for responsive design */}
-        <style>{`
-          @media (max-width: 768px) {
-            .anime-scroll-container {
-              scroll-snap-type: x mandatory;
-            }
-            .anime-scroll-container > * {
-              scroll-snap-align: start;
-            }
+    <div style={styles.container}>
+      {/* Custom CSS for responsive design */}
+      <style>{`
+        @media (max-width: 768px) {
+          .anime-scroll-container {
+            scroll-snap-type: x mandatory;
           }
-          
-          @media (max-width: 480px) {
-            .anime-scroll-container {
-              gap: 8px !important;
-              padding: 8px !important;
-            }
+          .anime-scroll-container > * {
+            scroll-snap-align: start;
           }
+        }
+        
+        @media (max-width: 480px) {
+          .anime-scroll-container {
+            gap: 8px !important;
+            padding: 8px !important;
+          }
+        }
 
-          /* Add Anime controls responsive layout */
+        /* Add Anime controls responsive layout */
+        .add-section-controls {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+        .autocomplete-wrap {
+          width: 100%;
+          max-width: 500px;
+        }
+        @media (max-width: 992px) {
           .add-section-controls {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 12px;
-            flex-wrap: wrap;
+            flex-direction: column;
+            align-items: stretch;
           }
-          .autocomplete-wrap {
+          .add-section-controls .add-button {
             width: 100%;
-            max-width: 500px;
           }
-          @media (max-width: 992px) {
-            .add-section-controls {
-              flex-direction: column;
-              align-items: stretch;
-            }
-            .add-section-controls .add-button {
-              width: 100%;
-            }
-          }
-          
-          /* Custom scrollbar styling */
-          .anime-scroll-container::-webkit-scrollbar {
-            height: 6px;
-          }
-          
-          .anime-scroll-container::-webkit-scrollbar-track {
-            background: rgba(97, 218, 251, 0.1);
-            border-radius: 3px;
-          }
-          
-          .anime-scroll-container::-webkit-scrollbar-thumb {
-            background: linear-gradient(90deg, #61dafb, #6dd6ff);
-            border-radius: 3px;
-          }
-          
-          .anime-scroll-container::-webkit-scrollbar-thumb:hover {
-            background: linear-gradient(90deg, #6dd6ff, #61dafb);
-          }
-        `}</style>
-      {/* Fixed Header Elements */}
-      {/* <div
-        style={{
-          position: "fixed",
-          top: 20,
-          left: 150,
-          color: "white",
-          padding: "4px 8px",
-          fontSize: "clamp(10px, 1.5vw, 12px)",
-          fontWeight: "bold",
-          borderRadius: 4,
-          zIndex: 1001,
-          userSelect: "none",
-          backgroundColor: "rgba(0,0,0,0.7)",
-          backdropFilter: "blur(10px)",
-        }}
-      >
-        {VERSION}
-      </div> */}
+        }
+        
+        /* Custom scrollbar styling */
+        .anime-scroll-container::-webkit-scrollbar {
+          height: 6px;
+        }
+        
+        .anime-scroll-container::-webkit-scrollbar-track {
+          background: rgba(97, 218, 251, 0.1);
+          border-radius: 3px;
+        }
+        
+        .anime-scroll-container::-webkit-scrollbar-thumb {
+          background: linear-gradient(90deg, #61dafb, #6dd6ff);
+          border-radius: 3px;
+        }
+        
+        .anime-scroll-container::-webkit-scrollbar-thumb:hover {
+          background: linear-gradient(90deg, #6dd6ff, #61dafb);
+        }
+
+        /* Performance optimizations */
+        * {
+          will-change: auto;
+        }
+        
+        .anime-scroll-container {
+          transform: translateZ(0);
+          -webkit-transform: translateZ(0);
+        }
+      `}</style>
 
       {/* Responsive Container */}
-      <div
-        style={{
-          maxWidth: "1400px",
-          margin: "0 auto",
-          padding: "clamp(10px, 3vw, 30px)",
-          paddingTop: "80px",
-          minHeight: "100vh",
-          display: "flex",
-          flexDirection: "column",
-          gap: "clamp(20px, 4vw, 40px)",
-        }}
-      >
+      <div style={styles.responsiveContainer}>
         {/* Navigation Header */}
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            backgroundColor: "rgba(18, 18, 18, 0.95)",
-            backdropFilter: "blur(20px)",
-            borderBottom: "1px solid rgba(97, 218, 251, 0.2)",
-            zIndex: 1000,
-            padding: "10px 20px",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: "10px",
-          }}
-        >
+        <div style={styles.fixedHeader}>
           <div style={{ display: "flex", gap: "15px", alignItems: "center" }}>
-            {/* <button
-              onClick={() => navigate("/cache")}
-              title="View Cached Data"
-              style={{
-                backgroundColor: "rgba(97, 218, 251, 0.1)",
-                border: "1px solid rgba(97, 218, 251, 0.3)",
-                borderRadius: "8px",
-                padding: "8px 12px",
-                fontSize: "clamp(16px, 2.5vw, 20px)",
-                cursor: "pointer",
-                color: "#61dafb",
-                transition: "all 0.3s ease",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.2)";
-                e.currentTarget.style.transform = "scale(1.05)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.1)";
-                e.currentTarget.style.transform = "scale(1)";
-              }}
-            >
-              🧠 Cache
-            </button> */}
+            {/* Navigation buttons can be added here if needed */}
           </div>
 
           <div style={{ display: "flex", gap: "15px", alignItems: "center" }}>
             <button
-              onClick={() => navigate("/animelist")}
+              onClick={navigationHandlers.toAnimeList}
               title="View Anime List"
-              style={{
-                marginLeft: "50px",
-                backgroundColor: "rgba(97, 218, 251, 0.1)",
-                border: "1px solid rgba(97, 218, 251, 0.3)",
-                borderRadius: "8px",
-                padding: "8px 12px",
-                fontSize: "clamp(16px, 2.5vw, 20px)",
-                cursor: "pointer",
-                color: "#61dafb",
-                transition: "all 0.3s ease",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.2)";
-                e.currentTarget.style.transform = "scale(1.05)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.1)";
-                e.currentTarget.style.transform = "scale(1)";
-              }}
+              style={{ ...styles.buttonBase, marginLeft: "50px" }}
+              {...createButtonHoverHandlers()}
             >
               📘 List
             </button>
             <button
-              onClick={() => navigate("/calendar")}
+              onClick={navigationHandlers.toCalendar}
               title="View Calendar"
-              style={{
-                backgroundColor: "rgba(97, 218, 251, 0.1)",
-                border: "1px solid rgba(97, 218, 251, 0.3)",
-                borderRadius: "8px",
-                padding: "8px 12px",
-                fontSize: "clamp(16px, 2.5vw, 20px)",
-                cursor: "pointer",
-                color: "#61dafb",
-                transition: "all 0.3s ease",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.2)";
-                e.currentTarget.style.transform = "scale(1.05)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.1)";
-                e.currentTarget.style.transform = "scale(1)";
-              }}
+              style={styles.buttonBase}
+              {...createButtonHoverHandlers()}
             >
               📅 Calendar
             </button>
             {/* User Login Button */}
-              {user ? (
-            <button
-              onClick={() => navigate("/user")}
-              title={`Logged in as ${username || user.email}`}
-              style={{
-                backgroundColor: "rgba(97, 218, 251, 0.1)",
-                border: "1px solid rgba(97, 218, 251, 0.3)",
-                borderRadius: "8px",
-                padding: "8px 12px",
-                fontSize: "clamp(16px, 2.5vw, 20px)",
-                cursor: "pointer",
-                color: "#61dafb",
-                zIndex: 1001,
-                fontWeight: "bold",
-                transition: "all 0.3s ease",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.2)";
-                e.currentTarget.style.transform = "scale(1.05)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.1)";
-                e.currentTarget.style.transform = "scale(1)";
-              }}
-            >
-              👤 {username || user.email?.split('@')[0]}
-            </button>
-          ) : (
-            <button
-              onClick={() => navigate("/login")}
-              title="Login or Signup"
-              style={{
-                backgroundColor: "rgba(97, 218, 251, 0.1)",
-                border: "1px solid rgba(97, 218, 251, 0.3)",
-                borderRadius: "8px",
-                padding: "8px 12px",
-                fontSize: "clamp(16px, 2.5vw, 20px)",
-                cursor: "pointer",
-                color: "#61dafb",
-                zIndex: 1001,
-                transition: "all 0.3s ease",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.2)";
-                e.currentTarget.style.transform = "scale(1.05)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = "rgba(97, 218, 251, 0.1)";
-                e.currentTarget.style.transform = "scale(1)";
-              }}
-            >
-              🔐 Login
-            </button>
-          )}
+            {user ? (
+              <button
+                onClick={navigationHandlers.toUser}
+                title={`Logged in as ${username || user.email}`}
+                style={{ ...styles.buttonBase, fontWeight: "bold" }}
+                {...createButtonHoverHandlers()}
+              >
+                👤 {username || user.email?.split('@')[0]}
+              </button>
+            ) : (
+              <button
+                onClick={navigationHandlers.toLogin}
+                title="Login or Signup"
+                style={styles.buttonBase}
+                {...createButtonHoverHandlers()}
+              >
+                🔐 Login
+              </button>
+            )}
           </div>
         </div>
 
         {/* Duplicate Popup */}
         {showDuplicatePopup && (
-          <div
-            style={{
-              position: "fixed",
-              top: "80px",
-              right: "20px",
-              backgroundColor: "rgba(255, 69, 58, 0.95)",
-              color: "white",
-              padding: "clamp(10px, 2vw, 15px) clamp(15px, 3vw, 25px)",
-              borderRadius: "8px",
-              boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
-              fontWeight: "700",
-              zIndex: 1000,
-              fontSize: "clamp(12px, 2vw, 14px)",
-              backdropFilter: "blur(10px)",
-              border: "1px solid rgba(255, 69, 58, 0.3)",
-            }}
-          >
+          <div style={styles.duplicatePopup}>
             This anime is already in your watching list!
           </div>
         )}
@@ -866,41 +912,16 @@ export default function MainPage() {
         {/* Main Content */}
         <div style={{ display: "flex", flexDirection: "column", gap: "clamp(25px, 5vw, 40px)" }}>
           {/* Page Title / Logo */}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              height: "64px",
-              overflow: "visible",
-            }}
-          >
+          <div style={styles.logoContainer}>
             <img
               src={appLogo}
               alt="App logo"
-              style={{
-                height: "250px",
-                width: "auto",
-                transform: "scale(2.2)",
-                transformOrigin: "center center",
-                filter: "drop-shadow(0 2px 10px rgba(97, 218, 251, 0.3))",
-                userSelect: "none",
-                pointerEvents: "none",
-              }}
+              style={styles.logo}
             />
           </div>
 
           {/* Add Anime Section */}
-          <div
-            style={{
-              backgroundColor: "rgba(40, 40, 40, 0.8)",
-              padding: "clamp(20px, 4vw, 30px)",
-              borderRadius: "16px",
-              textAlign: "center",
-              border: "1px solid rgba(97, 218, 251, 0.2)",
-              backdropFilter: "blur(10px)",
-            }}
-          >
+          <div style={styles.addSection}>
             <p style={{ 
               marginBottom: "clamp(15px, 3vw, 20px)",
               fontSize: "clamp(14px, 2.5vw, 16px)",
@@ -919,27 +940,9 @@ export default function MainPage() {
               </div>
               <button
                 onClick={addAnime}
-                style={{
-                  padding: "clamp(10px, 2vw, 15px) clamp(16px, 3vw, 24px)",
-                  background: "linear-gradient(135deg, #61dafb, #6dd6ff)",
-                  color: "#000",
-                  fontWeight: "bold",
-                  border: "none",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  fontSize: "clamp(14px, 2.5vw, 16px)",
-                  transition: "all 0.3s ease",
-                  boxShadow: "0 4px 15px rgba(97, 218, 251, 0.3)",
-                }}
+                style={styles.addButton}
                 className="add-button"
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.transform = "translateY(-2px)";
-                  e.currentTarget.style.boxShadow = "0 6px 20px rgba(97, 218, 251, 0.4)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.transform = "translateY(0)";
-                  e.currentTarget.style.boxShadow = "0 4px 15px rgba(97, 218, 251, 0.3)";
-                }}
+                {...addButtonHoverHandlers}
               >
                 Add Anime
               </button>
@@ -959,16 +962,7 @@ export default function MainPage() {
 
           {/* Watching List Section */}
           <div>
-            <h2
-              style={{
-                textAlign: "center",
-                marginBottom: "clamp(20px, 4vw, 30px)",
-                fontSize: "clamp(20px, 4vw, 28px)",
-                fontWeight: 700,
-                color: "#61dafb",
-                textShadow: "0 2px 10px rgba(97, 218, 251, 0.3)",
-              }}
-            >
+            <h2 style={styles.sectionTitle}>
               🎬 Your Watching List
             </h2>
             <SavedAnimeHorizontal

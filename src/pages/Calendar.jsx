@@ -196,6 +196,25 @@ export default function Calendar() {
             gap: 10px;
           }
         }
+        
+        /* Custom scrollbar for calendar */
+        .calendar-scroll::-webkit-scrollbar {
+          height: 8px;
+        }
+        
+        .calendar-scroll::-webkit-scrollbar-track {
+          background: rgba(97, 218, 251, 0.1);
+          border-radius: 4px;
+        }
+        
+        .calendar-scroll::-webkit-scrollbar-thumb {
+          background: linear-gradient(90deg, #61dafb, #6dd6ff);
+          border-radius: 4px;
+        }
+        
+        .calendar-scroll::-webkit-scrollbar-thumb:hover {
+          background: linear-gradient(90deg, #6dd6ff, #61dafb);
+        }
       `}</style>
       <header
         style={{
@@ -247,8 +266,11 @@ export default function Calendar() {
               cursor: "pointer",
               fontWeight: "700",
               color: "#fff",
+              transition: "all 0.2s ease",
             }}
             title="Toggle showing all episodes or only next upcoming"
+            onMouseEnter={(e) => e.currentTarget.style.transform = "scale(1.05)"}
+            onMouseLeave={(e) => e.currentTarget.style.transform = "scale(1)"}
           >
             {showAll ? "Show Only Next Episodes" : "Show All Episodes"}
           </button>
@@ -263,8 +285,11 @@ export default function Calendar() {
               cursor: "pointer",
               fontWeight: "700",
               color: "#fff",
+              transition: "all 0.2s ease",
             }}
             title="Show unwatched episodes"
+            onMouseEnter={(e) => e.currentTarget.style.transform = "scale(1.05)"}
+            onMouseLeave={(e) => e.currentTarget.style.transform = "scale(1)"}
           >
             🎯 Not Watched
           </button>
@@ -279,6 +304,16 @@ export default function Calendar() {
               cursor: "pointer",
               fontWeight: "700",
               color: "#333",
+              transition: "all 0.2s ease",
+              boxShadow: "0 2px 10px rgba(97, 218, 251, 0.3)",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = "scale(1.05)";
+              e.currentTarget.style.boxShadow = "0 4px 15px rgba(97, 218, 251, 0.5)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = "scale(1)";
+              e.currentTarget.style.boxShadow = "0 2px 10px rgba(97, 218, 251, 0.3)";
             }}
           >
             ← Back
@@ -315,7 +350,17 @@ export default function Calendar() {
               <h3 style={{ margin: 0 }}>Not Watched</h3>
               <button
                 onClick={() => setShowUnwatched(false)}
-                style={{ background: "#444", border: "none", color: "#fff", padding: "6px 10px", borderRadius: 6, cursor: "pointer" }}
+                style={{ 
+                  background: "#444", 
+                  border: "none", 
+                  color: "#fff", 
+                  padding: "6px 10px", 
+                  borderRadius: 6, 
+                  cursor: "pointer",
+                  transition: "all 0.2s ease",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "#555"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "#444"}
               >
                 ✕ Close
               </button>
@@ -339,6 +384,7 @@ export default function Calendar() {
 
       <div
         ref={calendarRef}
+        className="calendar-scroll"
         onWheel={(e) => {
           if (e.deltaY !== 0) {
             e.currentTarget.scrollLeft += e.deltaY;
