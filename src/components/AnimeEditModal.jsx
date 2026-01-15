@@ -12,6 +12,7 @@ export default function AnimeEditModal({
   onToggleCalendar,
   isInCalendar,
   setAnimeList,
+  onRename,
 }) {
   if (!isOpen || !anime) return null;
 
@@ -31,6 +32,7 @@ export default function AnimeEditModal({
 
   const [manualTime, setManualTime] = useState(displayIso);
   const [manualLink, setManualLink] = useState(anime.siteUrl || "");
+  const [customName, setCustomName] = useState(anime.customTitle || "");
 
   React.useEffect(() => {
     setManualTime(displayIso);
@@ -39,6 +41,10 @@ export default function AnimeEditModal({
   React.useEffect(() => {
     setManualLink(anime.siteUrl || "");
   }, [anime.siteUrl]);
+
+  React.useEffect(() => {
+    setCustomName(anime.customTitle || "");
+  }, [anime.customTitle]);
 
   function handleManualSave() {
     if (!manualTime) return;
@@ -141,8 +147,45 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
             <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
               <label style={{ fontSize: 12, color: "#aaa" }}>Name</label>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <input type="text" value={anime.title?.english || anime.title?.romaji || anime.title} disabled style={{ flex: 1, padding: 10, borderRadius: 6, border: "1px solid #333", background: "#2a2a2a", color: "#aaa" }} />
-                <button disabled style={{ background: "#444", color: "#aaa", border: "none", borderRadius: 6, padding: "8px 10px", cursor: "not-allowed" }}>Reset</button>
+                <input 
+                  type="text" 
+                  value={customName} 
+                  onChange={(e) => setCustomName(e.target.value)}
+                  placeholder={anime.title?.english || anime.title?.romaji || anime.title}
+                  style={{ flex: 1, padding: 10, borderRadius: 6, border: "1px solid #333", background: "#2a2a2a", color: "#eee" }} 
+                />
+                <button 
+                  onClick={() => {
+                    if (onRename) {
+                      onRename(anime.id, customName.trim() || "");
+                    }
+                  }}
+                  style={{ background: "#61dafb", color: "#000", border: "none", borderRadius: 6, padding: "8px 10px", fontWeight: 800, cursor: "pointer" }}
+                >
+                  Save
+                </button>
+                <button 
+                  onClick={() => {
+                    setCustomName("");
+                    if (onRename) {
+                      onRename(anime.id, "");
+                    }
+                  }}
+                  disabled={!anime.customTitle}
+                  style={{ 
+                    background: anime.customTitle ? "#444" : "#333", 
+                    color: anime.customTitle ? "#eee" : "#666", 
+                    border: "none", 
+                    borderRadius: 6, 
+                    padding: "8px 10px", 
+                    cursor: anime.customTitle ? "pointer" : "not-allowed" 
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
+                Original: {anime.title?.english || anime.title?.romaji || anime.title}
               </div>
 
               <label style={{ fontSize: 12, color: "#aaa", marginTop: 8 }}>Link</label>
@@ -178,9 +221,9 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
               {isLinkModified && (
                 <div style={{ fontSize: 12, color: "#ffa726" }}>Link has been modified from original</div>
               )}
-              {!anime.originalSiteUrl && (
+              {/* {!anime.originalSiteUrl && (
                 <div style={{ fontSize: 12, color: "#aaa" }}>No modifications made</div>
-              )}
+              )} */}
             </div>
           </div>
 
@@ -193,7 +236,7 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
                 onChange={(e) => setManualTime(e.target.value)}
                 style={{ flex: 1, minWidth: 240, padding: 10, borderRadius: 6, border: "1px solid #333", background: "#2a2a2a", color: "#eee" }}
               />
-              {/* <button onClick={handleManualSave} style={{ background: "#61dafb", color: "#000", border: "none", borderRadius: 6, padding: "10px 12px", fontWeight: 800, cursor: "pointer" }}>Save</button> */}
+              <button onClick={handleManualSave} style={{ background: "#61dafb", color: "#000", border: "none", borderRadius: 6, padding: "10px 12px", fontWeight: 800, cursor: "pointer" }}>Save</button>
               <button onClick={() => onAdjustOffsetSeconds(anime.id, 60 * 60)} style={{ background: "#2e7d32", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>+1h</button>
               <button onClick={() => onAdjustOffsetSeconds(anime.id, -60 * 60)} style={{ background: "#8b0000", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>-1h</button>
               <button onClick={() => onAdjustOffsetSeconds(anime.id, 30 * 60)} style={{ background: "#2e7d32", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>+30m</button>

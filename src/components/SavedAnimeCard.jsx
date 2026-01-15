@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useMemo, useRef, useEffect, useState } from "react";
+import { LIST_STATUS_OPTIONS, DEFAULT_LIST_STATUS } from "../constants/listStatuses";
+import { useNow, formatCountdown } from "../hooks/useNow";
 
 export default function SavedAnimeCard({
   anime,
@@ -8,98 +10,99 @@ export default function SavedAnimeCard({
   calendarList,
   isCompleted,
   onClickEdit,
+  onChangeStatus,
+  onRename,
 }) {
-  const [countdown, setCountdown] = useState("");
-  const [currentTime, setCurrentTime] = useState(Date.now());
-  const [clickTimer, setClickTimer] = useState(null);
+  const currentTime = useNow();
+  const clickTimerRef = useRef(null);
+  const statusMenuRef = useRef(null);
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
 
-  // Update countdown timer every second (only for non-completed anime)
   useEffect(() => {
-    if (isCompleted || !anime.airingAt) {
-      setCountdown("");
-      return;
-    }
-
-    function updateCountdown() {
-      const now = Date.now();
-      const airingTime = anime.airingAt * 1000;
-      const diffMs = airingTime - now;
-
-      if (diffMs <= 0) {
-        setCountdown("Now airing");
-        return;
+    return () => {
+      if (clickTimerRef.current) {
+        clearTimeout(clickTimerRef.current);
+        clickTimerRef.current = null;
       }
+    };
+  }, []);
 
-      const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diffMs / (1000 * 60 * 60)) % 24);
-      const mins = Math.floor((diffMs / (1000 * 60)) % 60);
-      const secs = Math.floor((diffMs / 1000) % 60);
-
-      let parts = [];
-      if (days > 0) parts.push(`${days}d`);
-      if (hours > 0) parts.push(`${hours}h`);
-      if (mins > 0) parts.push(`${mins}m`);
-      if (secs > 0 && days === 0) parts.push(`${secs}s`);
-
-      setCountdown(parts.join(" ") || "Less than a second");
-    }
-
-    updateCountdown();
-    const timer = setInterval(updateCountdown, 1000);
-    return () => clearInterval(timer);
-  }, [anime.airingAt, isCompleted]);
-
-  // Auto-refresh view after episode airs (only for non-completed anime)
   useEffect(() => {
-    if (isCompleted || !anime.airingAt) return;
+    if (!statusMenuOpen) return;
 
-    const now = Date.now();
-    const airingTime = anime.airingAt * 1000;
-    const delay = airingTime - now + 1000; // +1s buffer
-
-    if (delay > 0) {
-      const timeout = setTimeout(() => {
-        setCurrentTime(Date.now()); // Trigger re-render
-      }, delay);
-
-      return () => clearTimeout(timeout);
+    function handleOutsideClick(event) {
+      if (statusMenuRef.current && !statusMenuRef.current.contains(event.target)) {
+        setStatusMenuOpen(false);
+      }
     }
-  }, [anime.airingAt, isCompleted]);
 
-  const isAiring = !isCompleted && anime.episode !== null && anime.airingAt !== null;
-  const airingText = isCompleted
-    ? "✅ Completed"
-    : isAiring
-    ? `Ep ${anime.episode} - ${countdown}`
-    : "Finished airing";
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [statusMenuOpen]);
 
-  const isInCalendar = calendarList.some((a) => a.id === anime.id);
+  const nextAiringTs = anime.nextAiringEpisode?.airingAt || null;
+  const nextAiringEp = anime.nextAiringEpisode?.episode || null;
+  const countdown = useMemo(() => {
+    if (isCompleted || !nextAiringTs) return "";
+    return formatCountdown(nextAiringTs, currentTime);
+  }, [nextAiringTs, currentTime, isCompleted]);
+
+  const isAiring = !isCompleted && !!nextAiringTs;
+
+  const airingText = useMemo(() => {
+    if (isCompleted) {
+      return "Completed";
+    }
+    if (isAiring) {
+      return `Ep ${nextAiringEp ?? "?"} - ${countdown || "Now airing"}`;
+    }
+    return "Finished airing";
+  }, [countdown, isAiring, isCompleted, nextAiringEp]);
+
+  const isInCalendar = useMemo(
+    () => calendarList.some((a) => a.id === anime.id),
+    [calendarList, anime.id]
+  );
+
+  const currentStatus = anime.listStatus || DEFAULT_LIST_STATUS;
 
   const handleDoubleClick = () => {
-    if (clickTimer) {
-      clearTimeout(clickTimer);
-      setClickTimer(null);
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
     }
-    
+
     if (anime.siteUrl) {
-      window.open(anime.siteUrl, '_blank', 'noopener,noreferrer');
+      window.open(anime.siteUrl, "_blank", "noopener,noreferrer");
     }
   };
 
   const handleClick = () => {
-    if (clickTimer) {
-      clearTimeout(clickTimer);
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current);
     }
-    
-    const timer = setTimeout(() => {
+
+    clickTimerRef.current = setTimeout(() => {
       if (onClickEdit) {
         onClickEdit(anime);
       }
-      setClickTimer(null);
+      clickTimerRef.current = null;
     }, 250);
-    
-    setClickTimer(timer);
   };
+
+  const handleStatusButtonClick = (event) => {
+    event.stopPropagation();
+    setStatusMenuOpen((prev) => !prev);
+  };
+
+  const handleStatusOptionSelect = (status) => {
+    if (onChangeStatus) {
+      onChangeStatus(anime.id, status);
+    }
+    setStatusMenuOpen(false);
+  };
+
+  const titleDisplay = anime.customTitle || anime.title?.english || anime.title?.romaji;
 
   return (
     <div
@@ -109,7 +112,7 @@ export default function SavedAnimeCard({
         minWidth: "clamp(160px, 25vw, 200px)",
         height: "clamp(380px, 60vw, 460px)",
         borderRadius: "clamp(8px, 1.5vw, 12px)",
-        overflow: "hidden",
+        overflow: "visible",
         backgroundColor: anime.favorited ? "#2a2a2a" : "#1e1e1e",
         border: anime.favorited ? "2px solid #61dafb" : "none",
         flexShrink: 0,
@@ -122,27 +125,30 @@ export default function SavedAnimeCard({
         boxShadow: anime.favorited ? "0 0 15px rgba(97, 218, 251, 0.3)" : "none",
         transition: "all 0.3s ease",
         cursor: "pointer",
+        contain: "layout style",
       }}
       onMouseEnter={(e) => {
         e.currentTarget.style.transform = "translateY(-5px)";
-        e.currentTarget.style.boxShadow = anime.favorited 
-          ? "0 8px 25px rgba(97, 218, 251, 0.4)" 
+        e.currentTarget.style.boxShadow = anime.favorited
+          ? "0 8px 25px rgba(97, 218, 251, 0.4)"
           : "0 8px 25px rgba(0,0,0,0.3)";
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.transform = "translateY(0)";
-        e.currentTarget.style.boxShadow = anime.favorited 
-          ? "0 0 15px rgba(97, 218, 251, 0.3)" 
+        e.currentTarget.style.boxShadow = anime.favorited
+          ? "0 0 15px rgba(97, 218, 251, 0.3)"
           : "none";
       }}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
-      title="Single click to edit • Double click to visit anime page"
+      title="Single click to edit - double click to visit anime page"
     >
       <img
         src={anime.coverImage.extraLarge}
         alt={anime.title.english || anime.title.romaji}
         style={{ width: "100%", aspectRatio: "2/3", objectFit: "cover" }}
+        loading="lazy"
+        decoding="async"
       />
       <div
         style={{
@@ -168,16 +174,12 @@ export default function SavedAnimeCard({
               WebkitBoxOrient: "vertical",
               wordBreak: "break-word",
             }}
-            title={anime.title.english || anime.title.romaji}
+            title={titleDisplay}
           >
-            {anime.title.english || anime.title.romaji}
+            {titleDisplay}
           </h4>
 
-          <p style={{ 
-            fontSize: "clamp(10px, 2vw, 12px)", 
-            color: "#ccc", 
-            marginTop: 4 
-          }}>
+          <p style={{ fontSize: "clamp(10px, 2vw, 12px)", color: "#ccc", marginTop: 4 }}>
             {airingText}
           </p>
         </div>
@@ -187,13 +189,99 @@ export default function SavedAnimeCard({
             style={{
               display: "flex",
               justifyContent: "center",
+              alignItems: "center",
               gap: 10,
               marginTop: 8,
               marginBottom: 8,
             }}
           >
+            <div ref={statusMenuRef} style={{ position: "relative", zIndex: 50 }}>
+              <button
+                type="button"
+                onClick={handleStatusButtonClick}
+                style={{
+                  background: "rgba(97, 218, 251, 0.15)",
+                  border: "1px solid rgba(97, 218, 251, 0.4)",
+                  borderRadius: 6,
+                  padding: "6px 12px",
+                  color: "#61dafb",
+                  fontWeight: "bold",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  boxShadow: statusMenuOpen
+                    ? "0 0 12px rgba(97, 218, 251, 0.45)"
+                    : "0 0 8px rgba(97, 218, 251, 0.2)",
+                  transition: "all 0.2s ease",
+                  textTransform: "uppercase",
+                  letterSpacing: 0.3,
+                }}
+                title="Change list status"
+              >
+                {currentStatus}
+              </button>
+              {statusMenuOpen && (
+                <div
+                  style={{
+                    position: "absolute",
+                    bottom: "110%",
+                    left: 0,
+                    background: "rgba(30, 30, 30, 0.95)",
+                    border: "1px solid rgba(97, 218, 251, 0.35)",
+                    borderRadius: 8,
+                    boxShadow: "0 0 14px rgba(97, 218, 251, 0.35)",
+                    padding: 8,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    minWidth: 160,
+                    zIndex: 999,
+                    maxWidth: "min(160px, calc(100vw - 40px))",
+                    overflow: "hidden",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {LIST_STATUS_OPTIONS.map((status) => {
+                    const isActive = status === currentStatus;
+                    return (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleStatusOptionSelect(status);
+                        }}
+                        style={{
+                          background: isActive ? "rgba(97, 218, 251, 0.25)" : "transparent",
+                          color: "#eee",
+                          border: "none",
+                          borderRadius: 6,
+                          padding: "6px 10px",
+                          textAlign: "left",
+                          cursor: "pointer",
+                          fontSize: 12,
+                        }}
+                        onMouseEnter={(event) => {
+                          event.currentTarget.style.background = "rgba(97, 218, 251, 0.35)";
+                        }}
+                        onMouseLeave={(event) => {
+                          event.currentTarget.style.background = isActive
+                            ? "rgba(97, 218, 251, 0.25)"
+                            : "transparent";
+                        }}
+                      >
+                        {status}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             <button
-              onClick={(e) => { e.stopPropagation(); onToggleFavorite(anime.id); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleFavorite(anime.id);
+              }}
               style={{
                 backgroundColor: "#61dafb",
                 border: "none",
@@ -205,9 +293,7 @@ export default function SavedAnimeCard({
                 lineHeight: 1,
                 transition: "all 0.3s ease",
               }}
-              aria-label={
-                anime.favorited ? "Unfavorite anime" : "Favorite anime"
-              }
+              aria-label={anime.favorited ? "Unfavorite anime" : "Favorite anime"}
               title={anime.favorited ? "Unfavorite" : "Favorite"}
               onMouseEnter={(e) => {
                 e.currentTarget.style.transform = "scale(1.1)";
@@ -219,7 +305,10 @@ export default function SavedAnimeCard({
               {anime.favorited ? "★" : "☆"}
             </button>
             <button
-              onClick={(e) => { e.stopPropagation(); onDelete(anime.id); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(anime.id);
+              }}
               style={{
                 backgroundColor: "#e55353",
                 border: "none",
@@ -248,7 +337,10 @@ export default function SavedAnimeCard({
 
           {isAiring && (
             <button
-              onClick={(e) => { e.stopPropagation(); onToggleCalendar(anime); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleCalendar(anime);
+              }}
               style={{
                 marginTop: 4,
                 fontSize: "clamp(10px, 2vw, 12px)",
@@ -272,7 +364,7 @@ export default function SavedAnimeCard({
                 e.currentTarget.style.transform = "scale(1)";
               }}
             >
-              {isInCalendar ? "Added ✓" : "Add to calendar"}
+              {isInCalendar ? "Added" : "Add to calendar"}
             </button>
           )}
         </div>

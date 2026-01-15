@@ -316,3 +316,37 @@ export async function fetchAiringSchedulesWithDetails(ids) {
   const data = await fetchGraphQL(query, { ids });
   return data.Page.airingSchedules || [];
 }
+
+export function getCurrentSeasonYear(date = new Date()) {
+  const month = date.getMonth() + 1;
+  const year = date.getFullYear();
+  let season = "WINTER";
+  if (month >= 3 && month <= 5) season = "SPRING";
+  else if (month >= 6 && month <= 8) season = "SUMMER";
+  else if (month >= 9 && month <= 11) season = "FALL";
+  return { season, year };
+}
+
+export async function fetchTopSeasonal(sort = "POPULARITY_DESC", perPage = 20) {
+  const { season, year } = getCurrentSeasonYear();
+  const query = `
+    query($season: MediaSeason, $seasonYear: Int, $perPage: Int, $sort: [MediaSort]) {
+      Page(perPage: $perPage) {
+        media(season: $season, seasonYear: $seasonYear, type: ANIME, sort: $sort) {
+          id
+          title { romaji english }
+          coverImage { extraLarge }
+          description(asHtml: false)
+          episodes
+          status
+          siteUrl
+          nextAiringEpisode { airingAt episode }
+          season
+          seasonYear
+        }
+      }
+    }
+  `;
+  const data = await fetchGraphQL(query, { season, seasonYear: year, perPage, sort: [sort] });
+  return data?.Page?.media || [];
+}

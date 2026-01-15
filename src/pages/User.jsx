@@ -16,6 +16,9 @@ export default function UserPage() {
   const [activeTab, setActiveTab] = useState("personal");
   const [isWatchingListLoaded, setIsWatchingListLoaded] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [isEditingUsername, setIsEditingUsername] = useState(false);
+  const [newUsername, setNewUsername] = useState("");
+  const [usernameError, setUsernameError] = useState("");
 
   useEffect(() => {
     const currentUser = auth.currentUser;
@@ -29,9 +32,21 @@ export default function UserPage() {
         const userDoc = await getDoc(doc(db, "users", currentUser.uid));
         if (userDoc.exists()) {
           setUserData(userDoc.data());
+        } else {
+          // If user document doesn't exist, redirect to set username
+          // Don't create default - user must set username during signup
+          setUserData({
+            email: currentUser.email || "",
+            username: null,
+          });
         }
       } catch (err) {
         console.error("Error fetching user data:", err);
+        // Set fallback user data if there's an error
+        setUserData({
+          email: currentUser.email || "",
+          username: null,
+        });
       }
     }
 
@@ -45,7 +60,7 @@ export default function UserPage() {
 
         if (userDocSnap.exists()) {
           const data = userDocSnap.data();
-          const firebaseList = data.firebaseWatchingList || [];
+          const firebaseList = data.firebasewatchedlist || data.firebaseWatchingList || [];
           setCloudList(firebaseList);
         }
       } catch (err) {
@@ -69,7 +84,7 @@ export default function UserPage() {
         const userDocRef = doc(db, "users", currentUser.uid);
         await setDoc(
           userDocRef,
-          { firebaseWatchingList: watchingList },
+          { firebasewatchedlist: watchingList },
           { merge: true }
         );
         setCloudList(watchingList);
@@ -105,6 +120,81 @@ export default function UserPage() {
       const alreadyIn = prev.some((a) => a.id === anime.id);
       return alreadyIn ? prev : [...prev, anime];
     });
+  }
+
+  async function handleUsernameChange() {
+    setUsernameError("");
+    const trimmedUsername = newUsername.trim();
+    
+    if (!trimmedUsername) {
+      setUsernameError("Username cannot be empty.");
+      return;
+    }
+
+    if (trimmedUsername.length < 3) {
+      setUsernameError("Username must be at least 3 characters.");
+      return;
+    }
+
+    if (trimmedUsername.length > 20) {
+      setUsernameError("Username must be 20 characters or less.");
+      return;
+    }
+
+    // Check username format (letters, numbers, underscores only)
+    if (!/^[a-zA-Z0-9_]+$/.test(trimmedUsername)) {
+      setUsernameError("Username can only contain letters, numbers, and underscores.");
+      return;
+    }
+
+    // Check if username is already taken
+    try {
+      const { collection, query, where, getDocs } = await import("firebase/firestore");
+      const usersRef = collection(db, "users");
+      const usernameLower = trimmedUsername.toLowerCase();
+      const usernameQuery = query(usersRef, where("usernameLower", "==", usernameLower));
+      const usernameSnapshot = await getDocs(usernameQuery);
+      
+      if (!usernameSnapshot.empty) {
+        const existingUser = usernameSnapshot.docs[0];
+        const currentUser = auth.currentUser;
+        // Allow if it's the same user
+        if (existingUser.id !== currentUser?.uid) {
+          setUsernameError("Username already taken.");
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn("Could not check username:", err);
+      // Continue anyway if permission error
+    }
+
+    // Update username
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) return;
+
+      const userDocRef = doc(db, "users", currentUser.uid);
+      await setDoc(
+        userDocRef,
+        {
+          username: trimmedUsername,
+          usernameLower: trimmedUsername.toLowerCase(),
+        },
+        { merge: true }
+      );
+
+      setUserData((prev) => ({
+        ...prev,
+        username: trimmedUsername,
+      }));
+      setNewUsername("");
+      setIsEditingUsername(false);
+      setUsernameError("");
+    } catch (err) {
+      console.error("Error updating username:", err);
+      setUsernameError("Failed to update username. Please try again.");
+    }
   }
 
   const missingFromCloud = watchingList.filter(
@@ -197,8 +287,105 @@ export default function UserPage() {
         {activeTab === "personal" && (
           <section style={{ marginTop: 40 }}>
             <h2 style={{ borderBottom: "1px solid #444", paddingBottom: 8 }}>Personal Information</h2>
-            <p><strong>Username:</strong> {userData.username}</p>
-            <p><strong>Email:</strong> {userData.email}</p>
+            
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: "block", marginBottom: 8, fontWeight: 600 }}>
+                Username:
+              </label>
+              {isEditingUsername ? (
+                <div>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 8 }}>
+                    <input
+                      type="text"
+                      value={newUsername}
+                      onChange={(e) => {
+                        setNewUsername(e.target.value);
+                        setUsernameError("");
+                      }}
+                      placeholder={userData.username || "Enter username"}
+                      style={{
+                        flex: 1,
+                        padding: "10px",
+                        borderRadius: 6,
+                        border: "1px solid #333",
+                        background: "#2a2a2a",
+                        color: "#eee",
+                        fontSize: 14,
+                      }}
+                      maxLength={20}
+                    />
+                    <button
+                      onClick={handleUsernameChange}
+                      style={{
+                        background: "#61dafb",
+                        color: "#000",
+                        border: "none",
+                        borderRadius: 6,
+                        padding: "10px 16px",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsEditingUsername(false);
+                        setNewUsername("");
+                        setUsernameError("");
+                      }}
+                      style={{
+                        background: "#444",
+                        color: "#eee",
+                        border: "none",
+                        borderRadius: 6,
+                        padding: "10px 16px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {usernameError && (
+                    <p style={{ color: "#ff6b6b", fontSize: 12, marginTop: 4 }}>{usernameError}</p>
+                  )}
+                  <p style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
+                    Username must be 3-20 characters and can only contain letters, numbers, and underscores.
+                  </p>
+                </div>
+              ) : (
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <p style={{ margin: 0, fontSize: 16 }}>
+                    {userData.username || <span style={{ color: "#888", fontStyle: "italic" }}>Not set</span>}
+                  </p>
+                  <button
+                    onClick={() => {
+                      setIsEditingUsername(true);
+                      setNewUsername(userData.username || "");
+                    }}
+                    style={{
+                      background: "#61dafb",
+                      color: "#000",
+                      border: "none",
+                      borderRadius: 6,
+                      padding: "8px 12px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      fontSize: 12,
+                    }}
+                  >
+                    {userData.username ? "Change" : "Set Username"}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label style={{ display: "block", marginBottom: 8, fontWeight: 600 }}>
+                Email:
+              </label>
+              <p style={{ margin: 0, fontSize: 16 }}>{userData.email}</p>
+            </div>
           </section>
         )}
 

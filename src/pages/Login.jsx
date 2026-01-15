@@ -20,16 +20,22 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 async function getEmailFromUsername(usernameInput) {
-  const usernameLower = usernameInput.toLowerCase();
-  const usersRef = collection(db, "users");
-  const q = query(usersRef, where("usernameLower", "==", usernameLower));
+  try {
+    const usernameLower = usernameInput.toLowerCase();
+    const usersRef = collection(db, "users");
+    const q = query(usersRef, where("usernameLower", "==", usernameLower));
 
-  const querySnapshot = await getDocs(q);
-  if (!querySnapshot.empty) {
-    const userDoc = querySnapshot.docs[0];
-    return userDoc.data().email;
+    const querySnapshot = await getDocs(q);
+    if (!querySnapshot.empty) {
+      const userDoc = querySnapshot.docs[0];
+      return userDoc.data().email;
+    }
+    return null;
+  } catch (err) {
+    // If permission error, return null (can't check username)
+    console.warn("Could not check username:", err);
+    return null;
   }
-  return null;
 }
 
 export default function Login() {
@@ -75,24 +81,56 @@ export default function Login() {
           setError("Please enter a username.");
           return;
         }
+        
+        const trimmedUsername = username.trim();
+        if (trimmedUsername.length < 3) {
+          setError("Username must be at least 3 characters.");
+          return;
+        }
+        if (trimmedUsername.length > 20) {
+          setError("Username must be 20 characters or less.");
+          return;
+        }
+        // Check username format (letters, numbers, underscores only)
+        if (!/^[a-zA-Z0-9_]+$/.test(trimmedUsername)) {
+          setError("Username can only contain letters, numbers, and underscores.");
+          return;
+        }
+        
         if (password !== confirmPassword) {
           setError("Passwords do not match.");
           return;
         }
 
-        // Check duplicate username (case-insensitive)
-        const usernameLower = username.toLowerCase();
-        const usernameExists = await getEmailFromUsername(usernameLower);
+        // Try to check duplicate username (case-insensitive) - but don't fail if permission error
+        let usernameExists = false;
+        try {
+          const usernameLower = trimmedUsername.toLowerCase();
+          const emailFromUsername = await getEmailFromUsername(usernameLower);
+          usernameExists = !!emailFromUsername;
+        } catch (err) {
+          console.warn("Could not check username duplicate:", err);
+          // Continue anyway - will be checked after account creation
+        }
+
         if (usernameExists) {
           setError("Username already taken.");
           return;
         }
 
-        // Check duplicate email
-        const usersRef = collection(db, "users");
-        const emailQuery = query(usersRef, where("email", "==", input));
-        const emailSnapshot = await getDocs(emailQuery);
-        if (!emailSnapshot.empty) {
+        // Try to check duplicate email - but don't fail if permission error
+        let emailExists = false;
+        try {
+          const usersRef = collection(db, "users");
+          const emailQuery = query(usersRef, where("email", "==", input));
+          const emailSnapshot = await getDocs(emailQuery);
+          emailExists = !emailSnapshot.empty;
+        } catch (err) {
+          console.warn("Could not check email duplicate:", err);
+          // Continue anyway - Firebase Auth will handle duplicate emails
+        }
+
+        if (emailExists) {
           setError("Email already in use.");
           return;
         }
@@ -105,11 +143,30 @@ export default function Login() {
         );
 
         // Save username and email in Firestore
-        await setDoc(doc(db, "users", userCredential.user.uid), {
-          username: username,
-          usernameLower,
-          email: input,
-        });
+        // Check for duplicate username one more time after auth (now we have permissions)
+        try {
+          const usernameLower = trimmedUsername.toLowerCase();
+          const emailFromUsername = await getEmailFromUsername(usernameLower);
+          if (emailFromUsername && emailFromUsername !== input) {
+            // Username already taken by another user, delete the account
+            await userCredential.user.delete();
+            setError("Username already taken.");
+            return;
+          }
+        } catch (err) {
+          console.warn("Could not verify username after signup:", err);
+        }
+
+        try {
+          await setDoc(doc(db, "users", userCredential.user.uid), {
+            username: trimmedUsername,
+            usernameLower: trimmedUsername.toLowerCase(),
+            email: input,
+          });
+        } catch (err) {
+          console.error("Error saving user data:", err);
+          // Don't fail signup if we can't save to Firestore
+        }
 
         navigate("/user");
       }

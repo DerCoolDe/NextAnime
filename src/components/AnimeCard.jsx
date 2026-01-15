@@ -1,53 +1,21 @@
 // src/components/AnimeCard.jsx
-import React, { useState, useEffect } from "react";
+import React, { useMemo } from "react";
+import { useNow, formatCountdown } from "../hooks/useNow";
 
-export default function AnimeCard({ episode, watchingList, onAddAnime }) {
+function AnimeCard({ episode, watchingIdSet, onAddAnime }) {
   const {
     media: { id, title, coverImage, genres, siteUrl },
     episode: epNumber,
     airingAt,
   } = episode;
 
-  const [countdown, setCountdown] = useState("");
+  const currentTime = useNow();
+  const countdown = useMemo(
+    () => formatCountdown(airingAt, currentTime),
+    [airingAt, currentTime]
+  );
 
-  // Check if anime is already in watching list
-  const isInWatchingList = watchingList.some((anime) => anime.id === id);
-
-  // Update countdown timer every second
-  useEffect(() => {
-    if (!airingAt) {
-      setCountdown("");
-      return;
-    }
-
-    function updateCountdown() {
-      const now = Date.now();
-      const airingTime = airingAt * 1000;
-      const diffMs = airingTime - now;
-
-      if (diffMs <= 0) {
-        setCountdown("Now airing");
-        return;
-      }
-
-      const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diffMs / (1000 * 60 * 60)) % 24);
-      const mins = Math.floor((diffMs / (1000 * 60)) % 60);
-      const secs = Math.floor((diffMs / 1000) % 60);
-
-      let parts = [];
-      if (days > 0) parts.push(`${days}d`);
-      if (hours > 0) parts.push(`${hours}h`);
-      if (mins > 0) parts.push(`${mins}m`);
-      if (secs > 0 && days === 0) parts.push(`${secs}s`);
-
-      setCountdown(parts.join(" ") || "Less than a second");
-    }
-
-    updateCountdown();
-    const timer = setInterval(updateCountdown, 1000);
-    return () => clearInterval(timer);
-  }, [airingAt]);
+  const isInWatchingList = Boolean(watchingIdSet && watchingIdSet.has(id));
 
   const handleAddAnime = async () => {
     if (onAddAnime) {
@@ -70,7 +38,6 @@ export default function AnimeCard({ episode, watchingList, onAddAnime }) {
       }}
       onMouseEnter={(e) => (e.currentTarget.style.transform = "scale(1.02)")}
       onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}
-      key={`${id}-${epNumber}`}
     >
       <a
         href={siteUrl}
@@ -91,6 +58,8 @@ export default function AnimeCard({ episode, watchingList, onAddAnime }) {
           src={coverImage.extraLarge}
           alt={title.romaji}
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          loading="lazy"
+          decoding="async"
         />
       </a>
 
@@ -145,3 +114,5 @@ export default function AnimeCard({ episode, watchingList, onAddAnime }) {
     </div>
   );
 }
+
+export default React.memo(AnimeCard);

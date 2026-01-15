@@ -186,6 +186,8 @@ export default function Calendar() {
         borderRadius: 12,
         boxShadow: "0 0 20px rgba(0,0,0,0.7)",
         minHeight: "60vh",
+        overflowX: "hidden",
+        boxSizing: "border-box",
       }}
     >
       <style>{`

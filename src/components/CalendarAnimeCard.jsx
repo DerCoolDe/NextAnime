@@ -130,7 +130,7 @@ export default function CalendarAnimeCard({ anime, onRemove }) {
             transition: "color 0.3s ease",
           }}
         >
-          {anime.title.english || anime.title.romaji}
+          {anime.title?.customTitle || anime.title?.english || anime.title?.romaji || anime.title}
         </div>
       </div>
 

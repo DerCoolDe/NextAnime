@@ -1,62 +1,65 @@
-import React from "react";
+import React, { useMemo } from "react";
 import AnimeCard from "./AnimeCard";
 
 export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAnime }) {
-  if (!episodes || episodes.length === 0) return <p>No upcoming episodes available.</p>;
+  const normalizedEpisodes = useMemo(
+    () => (Array.isArray(episodes) ? episodes : []),
+    [episodes]
+  );
 
-  // Helper function to get day name from timestamp
-  const getDayName = (timestamp) => {
-    const date = new Date(timestamp * 1000);
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    
-    // Check if it's today
-    if (date.toDateString() === today.toDateString()) {
-      return "Today";
+  const watchingIdSet = useMemo(() => {
+    if (!watchingList || watchingList.length === 0) {
+      return new Set();
     }
-    // Check if it's tomorrow
-    if (date.toDateString() === tomorrow.toDateString()) {
-      return "Tomorrow";
-    }
-    // Otherwise return the day name
-    return date.toLocaleDateString('en-US', { weekday: 'long' });
-  };
+    return new Set(watchingList.map((anime) => anime.id));
+  }, [watchingList]);
 
-  // Helper function to get date string
-  const getDateString = (timestamp) => {
-    const date = new Date(timestamp * 1000);
-    return date.toLocaleDateString('en-US', { 
-      month: 'short', 
-      day: 'numeric',
-      year: 'numeric'
+  const { groupedEpisodes, sortedDays } = useMemo(() => {
+    const dayGroups = normalizedEpisodes.reduce((groups, episode) => {
+      const date = new Date(episode.airingAt * 1000);
+      const today = new Date();
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      let dayName;
+      if (date.toDateString() === today.toDateString()) {
+        dayName = "Today";
+      } else if (date.toDateString() === tomorrow.toDateString()) {
+        dayName = "Tomorrow";
+      } else {
+        dayName = date.toLocaleDateString("en-US", { weekday: "long" });
+      }
+
+      const dateString = date.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+
+      const dayKey = `${dayName} - ${dateString}`;
+      if (!groups[dayKey]) {
+        groups[dayKey] = [];
+      }
+      groups[dayKey].push(episode);
+      return groups;
+    }, {});
+
+    Object.keys(dayGroups).forEach((dayKey) => {
+      dayGroups[dayKey].sort((a, b) => a.airingAt - b.airingAt);
     });
-  };
 
-  // Group episodes by day
-  const episodesByDay = episodes.reduce((groups, episode) => {
-    const dayName = getDayName(episode.airingAt);
-    const dateString = getDateString(episode.airingAt);
-    const dayKey = `${dayName} - ${dateString}`;
-    
-    if (!groups[dayKey]) {
-      groups[dayKey] = [];
-    }
-    groups[dayKey].push(episode);
-    return groups;
-  }, {});
+    const orderedDays = Object.keys(dayGroups).sort((a, b) => {
+      const firstEpisodeA = dayGroups[a][0];
+      const firstEpisodeB = dayGroups[b][0];
+      return firstEpisodeA.airingAt - firstEpisodeB.airingAt;
+    });
 
-  // Sort episodes within each day by airing time
-  Object.keys(episodesByDay).forEach(dayKey => {
-    episodesByDay[dayKey].sort((a, b) => a.airingAt - b.airingAt);
-  });
+    return { groupedEpisodes: dayGroups, sortedDays: orderedDays };
+  }, [normalizedEpisodes]);
 
-  // Sort days chronologically
-  const sortedDays = Object.keys(episodesByDay).sort((a, b) => {
-    const firstEpisodeA = episodesByDay[a][0];
-    const firstEpisodeB = episodesByDay[b][0];
-    return firstEpisodeA.airingAt - firstEpisodeB.airingAt;
-  });
+  if (sortedDays.length === 0) {
+    return <p>No upcoming episodes available.</p>;
+  }
 
   return (
     <div>
@@ -78,13 +81,11 @@ export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAni
           textShadow: "0 2px 10px rgba(97, 218, 251, 0.3)",
         }}
       >
-        🎬 Upcoming Episodes
+        Upcoming Episodes
       </h3>
-      
+
       {sortedDays.map((dayKey) => (
-        <div key={dayKey} style={{ 
-          marginBottom: "clamp(20px, 4vw, 35px)" 
-        }}>
+        <div key={dayKey} style={{ marginBottom: "clamp(20px, 4vw, 35px)" }}>
           <h4
             style={{
               backgroundColor: "rgba(42, 42, 42, 0.9)",
@@ -99,7 +100,7 @@ export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAni
               backdropFilter: "blur(10px)",
             }}
           >
-            📅 {dayKey}
+            {dayKey}
           </h4>
           <div
             style={{
@@ -112,13 +113,11 @@ export default function UpcomingAnimeVertical({ episodes, watchingList, onAddAni
             }}
           >
             <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {episodesByDay[dayKey].map((ep) => (
-                <li key={ep.media.id + ep.episode} style={{ 
-                  marginBottom: "clamp(8px, 2vw, 15px)" 
-                }}>
-                  <AnimeCard 
-                    episode={ep} 
-                    watchingList={watchingList}
+              {groupedEpisodes[dayKey].map((ep) => (
+                <li key={ep.media.id + ep.episode} style={{ marginBottom: "clamp(8px, 2vw, 15px)" }}>
+                  <AnimeCard
+                    episode={ep}
+                    watchingIdSet={watchingIdSet}
                     onAddAnime={onAddAnime}
                   />
                 </li>
