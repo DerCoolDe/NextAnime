@@ -82,6 +82,49 @@ async function saveFirestoreWatchingList(uid, list) {
   }
 }
 
+// Provider priority order: higher number = higher priority
+const PROVIDER_PRIORITY = {
+  "Crunchyroll": 5,
+  "Netflix": 4,
+  "Prime Video": 3,
+  "Disney+": 2,
+  "AniList": 1,
+};
+
+// Get priority for a provider name (case-insensitive)
+function getProviderPriority(siteName) {
+  if (!siteName) return 0;
+  const normalized = siteName.toLowerCase();
+  for (const [key, priority] of Object.entries(PROVIDER_PRIORITY)) {
+    if (normalized.includes(key.toLowerCase())) {
+      return priority;
+    }
+  }
+  return 0;
+}
+
+// Get the best provider URL based on priority
+function getBestProviderUrlFromLinks(externalLinks, defaultSiteUrl) {
+  if (!externalLinks || externalLinks.length === 0) {
+    return defaultSiteUrl || "";
+  }
+  
+  // Find the highest priority provider from externalLinks
+  const sorted = [...externalLinks].sort((a, b) => {
+    const priorityA = getProviderPriority(a.site);
+    const priorityB = getProviderPriority(b.site);
+    return priorityB - priorityA; // Higher priority first
+  });
+  
+  // Return the highest priority provider
+  if (sorted[0]) {
+    return sorted[0].url;
+  }
+  
+  // Fallback to AniList siteUrl
+  return defaultSiteUrl || "";
+}
+
 // Merge two lists of anime, prefer local entries but add missing from Firestore
 function mergeLists(localList, firestoreList) {
   const map = new Map();
@@ -669,13 +712,19 @@ export default function MainPage() {
       // Cache the anime details for future use
       setCachedAnimeDetails(detailedAnime.id, detailedAnime);
 
+      // Get the best provider URL based on priority
+      const bestProviderUrl = getBestProviderUrlFromLinks(
+        detailedAnime.externalLinks || [],
+        detailedAnime.siteUrl
+      );
+
       const updatedAnime = {
         id: detailedAnime.id,
         title: detailedAnime.title,
         coverImage: detailedAnime.coverImage,
         episodes: detailedAnime.episodes || 0,
         status: detailedAnime.status || "UNKNOWN",
-        siteUrl: detailedAnime.siteUrl,
+        siteUrl: bestProviderUrl, // Use best provider based on priority
         genres: detailedAnime.genres || [],
         externalLinks: detailedAnime.externalLinks || [],
         cachedEpisodes: 0,
@@ -727,13 +776,19 @@ export default function MainPage() {
       // Cache the anime details for future use
       setCachedAnimeDetails(detailedAnime.id, detailedAnime);
 
+      // Get the best provider URL based on priority
+      const bestProviderUrl = getBestProviderUrlFromLinks(
+        detailedAnime.externalLinks || [],
+        detailedAnime.siteUrl
+      );
+
       const updatedAnime = {
         id: detailedAnime.id,
         title: detailedAnime.title,
         coverImage: detailedAnime.coverImage,
         episodes: detailedAnime.episodes || 0,
         status: detailedAnime.status || "UNKNOWN",
-        siteUrl: detailedAnime.siteUrl,
+        siteUrl: bestProviderUrl, // Use best provider based on priority
         genres: detailedAnime.genres || [],
         externalLinks: detailedAnime.externalLinks || [],
         cachedEpisodes: 0,
@@ -919,6 +974,13 @@ export default function MainPage() {
         // Cache the updated anime details
         setCachedAnimeDetails(anime.id, freshData);
         
+        // Preserve user-modified siteUrl (don't overwrite if user has set a custom link)
+        // Only update externalLinks if they're missing or empty
+        const preservedSiteUrl = anime.siteUrl || freshData.siteUrl;
+        const preservedExternalLinks = (anime.externalLinks && anime.externalLinks.length > 0) 
+          ? anime.externalLinks 
+          : (freshData.externalLinks || []);
+        
         return {
           ...anime,
           // Update with fresh data
@@ -926,9 +988,11 @@ export default function MainPage() {
           coverImage: freshData.coverImage || anime.coverImage,
           episodes: freshData.episodes ?? anime.episodes,
           status: freshData.status || anime.status,
-          siteUrl: freshData.siteUrl || anime.siteUrl,
+          // Preserve existing siteUrl (user-modified links should not be reset)
+          siteUrl: preservedSiteUrl,
           genres: freshData.genres || anime.genres,
-          externalLinks: freshData.externalLinks || anime.externalLinks || [],
+          // Preserve existing externalLinks if they exist, otherwise use fresh data
+          externalLinks: preservedExternalLinks,
           fullAiringSchedule: freshData.airingSchedule?.nodes || anime.fullAiringSchedule,
           // Use fresh nextAiringEpisode even if null (for completed shows)
           nextAiringEpisode: freshData.nextAiringEpisode ?? null,
@@ -1232,7 +1296,13 @@ export default function MainPage() {
           onDelete={deleteAnime}
           onToggleCalendar={handleToggleCalendar}
           isInCalendar={editTarget ? calendarList.some((a) => a.id === editTarget.id) : false}
-          setAnimeList={setWatchingList}
+          setAnimeList={(updater) => {
+            setWatchingList(prevList => {
+              const updated = typeof updater === 'function' ? updater(prevList) : updater;
+              applyUpdateAndPersist(updated);
+              return updated;
+            });
+          }}
           onRename={handleRenameTitle}
         />
       </div>

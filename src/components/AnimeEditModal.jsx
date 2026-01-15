@@ -1,5 +1,85 @@
 import React, { useMemo, useState } from "react";
 
+// Provider priority order: higher number = higher priority
+const PROVIDER_PRIORITY = {
+  "Crunchyroll": 5,
+  "Netflix": 4,
+  "Prime Video": 3,
+  "Disney+": 2,
+  "AniList": 1,
+};
+
+// Get priority for a provider name (case-insensitive)
+function getProviderPriority(siteName) {
+  if (!siteName) return 0;
+  const normalized = siteName.toLowerCase();
+  for (const [key, priority] of Object.entries(PROVIDER_PRIORITY)) {
+    if (normalized.includes(key.toLowerCase())) {
+      return priority;
+    }
+  }
+  return 0;
+}
+
+// Get the best provider URL based on priority
+function getBestProviderUrl(anime) {
+  if (!anime) return "";
+  
+  // If user has set a custom siteUrl, use that first
+  if (anime.siteUrl) {
+    // Check if it's a priority provider
+    const externalLink = anime.externalLinks?.find(link => link.url === anime.siteUrl);
+    if (externalLink) {
+      const priority = getProviderPriority(externalLink.site);
+      if (priority > 0) {
+        return anime.siteUrl;
+      }
+    }
+  }
+  
+  // Otherwise, find the highest priority provider from externalLinks
+  if (anime.externalLinks && anime.externalLinks.length > 0) {
+    const sorted = [...anime.externalLinks].sort((a, b) => {
+      const priorityA = getProviderPriority(a.site);
+      const priorityB = getProviderPriority(b.site);
+      return priorityB - priorityA; // Higher priority first
+    });
+    
+    // Return the highest priority provider
+    if (sorted[0]) {
+      return sorted[0].url;
+    }
+  }
+  
+  // Fallback to AniList siteUrl
+  return anime.siteUrl || "";
+}
+
+// Sort providers by priority
+function sortProvidersByPriority(links, siteUrl) {
+  const allLinks = [];
+  
+  // Add external links
+  if (links && links.length > 0) {
+    allLinks.push(...links.map(link => ({ ...link, isAniList: false })));
+  }
+  
+  // Add AniList if available
+  if (siteUrl) {
+    allLinks.push({ url: siteUrl, site: "AniList", isAniList: true });
+  }
+  
+  // Sort by priority (higher first), then alphabetically
+  return allLinks.sort((a, b) => {
+    const priorityA = getProviderPriority(a.site);
+    const priorityB = getProviderPriority(b.site);
+    if (priorityA !== priorityB) {
+      return priorityB - priorityA; // Higher priority first
+    }
+    return (a.site || "").localeCompare(b.site || "");
+  });
+}
+
 export default function AnimeEditModal({
   anime,
   isOpen,
@@ -30,27 +110,40 @@ export default function AnimeEditModal({
     return `${yyyy}-${MM}-${dd}T${hh}:${mm}`;
   }, [currentAdjustedTs]);
 
+  // Get the best provider URL based on priority
+  const bestProviderUrl = useMemo(() => getBestProviderUrl(anime), [anime]);
+  
+  // Get sorted providers
+  const sortedProviders = useMemo(() => 
+    sortProvidersByPriority(anime.externalLinks, anime.siteUrl), 
+    [anime.externalLinks, anime.siteUrl]
+  );
+
   const [manualTime, setManualTime] = useState(displayIso);
-  const [manualLink, setManualLink] = useState(anime.siteUrl || "");
+  const [manualLink, setManualLink] = useState(anime.siteUrl || bestProviderUrl);
   const [customName, setCustomName] = useState(anime.customTitle || "");
-  const [selectedProvider, setSelectedProvider] = useState(anime.siteUrl || "");
+  const [selectedProvider, setSelectedProvider] = useState(anime.siteUrl || bestProviderUrl);
 
   React.useEffect(() => {
     setManualTime(displayIso);
   }, [displayIso]);
 
   React.useEffect(() => {
-    setManualLink(anime.siteUrl || "");
-  }, [anime.siteUrl]);
+    // Use best provider if no custom siteUrl is set
+    const urlToUse = anime.siteUrl || bestProviderUrl;
+    setManualLink(urlToUse);
+  }, [anime.siteUrl, bestProviderUrl]);
 
   React.useEffect(() => {
     setCustomName(anime.customTitle || "");
   }, [anime.customTitle]);
 
   React.useEffect(() => {
-    setSelectedProvider(anime.siteUrl || "");
-    setManualLink(anime.siteUrl || "");
-  }, [anime.siteUrl]);
+    // Auto-select best provider when modal opens or anime changes
+    const urlToUse = anime.siteUrl || bestProviderUrl;
+    setSelectedProvider(urlToUse);
+    setManualLink(urlToUse);
+  }, [anime.siteUrl, bestProviderUrl, isOpen]);
 
   function handleManualSave() {
     if (!manualTime) return;
@@ -72,19 +165,13 @@ export default function AnimeEditModal({
           return {
             ...animeItem,
             siteUrl: trimmedLink, // Save the new link (trimmed)
-            originalSiteUrl: originalSiteUrl // Keep track of the original
+            originalSiteUrl: originalSiteUrl, // Keep track of the original
+            // Preserve externalLinks if they exist
+            externalLinks: animeItem.externalLinks || []
           };
         }
         return animeItem;
       });
-      // Save to localStorage
-      if (typeof window !== 'undefined' && window.localStorage) {
-        try {
-          localStorage.setItem('watchingList', JSON.stringify(updated));
-        } catch (e) {
-          console.warn('Failed to save to localStorage:', e);
-        }
-      }
       return updated;
     });
     
@@ -226,19 +313,19 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
               <label style={{ fontSize: 12, color: "#aaa", marginTop: 8 }}>Streaming Link</label>
               
               {/* Streaming Providers */}
-              {(anime.externalLinks && anime.externalLinks.length > 0) && (
+              {sortedProviders.length > 0 && (
                 <div style={{ marginBottom: 8 }}>
                   <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>Available Providers:</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {anime.externalLinks.map((link) => {
-                      const isSelected = selectedProvider === link.url;
-                      const siteName = link.site || "Unknown";
+                    {sortedProviders.map((provider) => {
+                      const isSelected = selectedProvider === provider.url;
+                      const siteName = provider.site || "Unknown";
                       return (
                         <button
-                          key={link.id || link.url}
+                          key={provider.id || provider.url}
                           onClick={() => {
-                            setSelectedProvider(link.url);
-                            setManualLink(link.url);
+                            setSelectedProvider(provider.url);
+                            setManualLink(provider.url);
                           }}
                           style={{
                             background: isSelected ? "#61dafb" : "#444",
@@ -251,32 +338,12 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
                             cursor: "pointer",
                             transition: "all 0.2s ease",
                           }}
-                          title={link.url}
+                          title={provider.url}
                         >
                           {siteName}
                         </button>
                       );
                     })}
-                    {anime.siteUrl && (
-                      <button
-                        onClick={() => {
-                          setSelectedProvider(anime.siteUrl);
-                          setManualLink(anime.siteUrl);
-                        }}
-                        style={{
-                          background: selectedProvider === anime.siteUrl ? "#61dafb" : "#444",
-                          color: selectedProvider === anime.siteUrl ? "#000" : "#eee",
-                          border: `1px solid ${selectedProvider === anime.siteUrl ? "#61dafb" : "#666"}`,
-                          borderRadius: 6,
-                          padding: "6px 10px",
-                          fontSize: 11,
-                          fontWeight: selectedProvider === anime.siteUrl ? 700 : 400,
-                          cursor: "pointer",
-                        }}
-                      >
-                        AniList
-                      </button>
-                    )}
                   </div>
                 </div>
               )}
