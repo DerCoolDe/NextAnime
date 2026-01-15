@@ -443,6 +443,8 @@ export default function MainPage() {
           },
           coverImage: src.coverImage,
           favorited: src.favorited || false,
+          siteUrl: src.siteUrl || ep.siteUrl,
+          externalLinks: src.externalLinks || ep.externalLinks || [],
         };
       });
       if (debouncedSaveCalendarList.current) {
@@ -550,6 +552,7 @@ export default function MainPage() {
                 status: scheduleData.media.status || anime.status,
                 siteUrl: scheduleData.media.siteUrl || anime.siteUrl,
                 genres: scheduleData.media.genres || anime.genres,
+                externalLinks: scheduleData.media.externalLinks || anime.externalLinks || [],
                 fullAiringSchedule: scheduleData.media.airingSchedule?.nodes || anime.fullAiringSchedule,
                 nextAiringEpisode: scheduleData.media.nextAiringEpisode || anime.nextAiringEpisode,
               };
@@ -590,13 +593,21 @@ export default function MainPage() {
     }
   }, [calendarList]);
 
-  // Sync calendar list with current favorite status from watching list
+  // Sync calendar list with current favorite status, siteUrl, and externalLinks from watching list
   useEffect(() => {
     if (watchingList.length > 0) {
       setCalendarList((prev) => {
         const updatedCalendar = prev.map((ep) => {
           const anime = watchingList.find(a => a.id === ep.id);
-          return anime ? { ...ep, favorited: anime.favorited || false } : ep;
+          if (anime) {
+            return {
+              ...ep,
+              favorited: anime.favorited || false,
+              siteUrl: anime.siteUrl || ep.siteUrl,
+              externalLinks: anime.externalLinks || ep.externalLinks || [],
+            };
+          }
+          return ep;
         });
         if (debouncedSaveCalendarList.current) {
           debouncedSaveCalendarList.current(updatedCalendar);
@@ -666,6 +677,7 @@ export default function MainPage() {
         status: detailedAnime.status || "UNKNOWN",
         siteUrl: detailedAnime.siteUrl,
         genres: detailedAnime.genres || [],
+        externalLinks: detailedAnime.externalLinks || [],
         cachedEpisodes: 0,
         favorited: false,
         listStatus: DEFAULT_LIST_STATUS,
@@ -723,6 +735,7 @@ export default function MainPage() {
         status: detailedAnime.status || "UNKNOWN",
         siteUrl: detailedAnime.siteUrl,
         genres: detailedAnime.genres || [],
+        externalLinks: detailedAnime.externalLinks || [],
         cachedEpisodes: 0,
         favorited: false,
         listStatus: DEFAULT_LIST_STATUS,
@@ -765,6 +778,8 @@ export default function MainPage() {
           episode: ep.episode,
           airingAt: ep.airingAt,
           favorited: anime.favorited || false,
+          siteUrl: anime.siteUrl,
+          externalLinks: anime.externalLinks || [],
         }));
 
         const updated = [...prev, ...episodesToAdd];
@@ -913,6 +928,7 @@ export default function MainPage() {
           status: freshData.status || anime.status,
           siteUrl: freshData.siteUrl || anime.siteUrl,
           genres: freshData.genres || anime.genres,
+          externalLinks: freshData.externalLinks || anime.externalLinks || [],
           fullAiringSchedule: freshData.airingSchedule?.nodes || anime.fullAiringSchedule,
           // Use fresh nextAiringEpisode even if null (for completed shows)
           nextAiringEpisode: freshData.nextAiringEpisode ?? null,
@@ -944,6 +960,8 @@ export default function MainPage() {
             title: anime.title,
             coverImage: anime.coverImage,
             favorited: anime.favorited || false,
+            siteUrl: anime.siteUrl || ep.siteUrl,
+            externalLinks: anime.externalLinks || ep.externalLinks || [],
           };
         });
         if (debouncedSaveCalendarList.current) {
@@ -976,12 +994,28 @@ export default function MainPage() {
           .anime-scroll-container > * {
             scroll-snap-align: start;
           }
+          .fixed-header {
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            gap: 10px !important;
+          }
+          .fixed-header > div:first-child {
+            width: 100%;
+          }
+          .fixed-header > div:last-child {
+            width: 100%;
+            justify-content: flex-start;
+          }
         }
         
         @media (max-width: 480px) {
           .anime-scroll-container {
             gap: 8px !important;
             padding: 8px !important;
+          }
+          .fixed-header button {
+            font-size: 12px !important;
+            padding: 6px 10px !important;
           }
         }
 
@@ -1041,7 +1075,7 @@ export default function MainPage() {
       <div style={styles.responsiveContainer}>
         {/* Navigation Header */}
         <div style={styles.fixedHeader}>
-          <div style={{ display: "flex", gap: "15px", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "15px", alignItems: "center", flexWrap: "wrap" }}>
             <button
               onClick={handleResetAnimeData}
               title="Refresh all anime data (check for new episodes, delays, completion status)"
@@ -1049,6 +1083,8 @@ export default function MainPage() {
                 ...styles.buttonBase,
                 backgroundColor: "rgba(97, 218, 251, 0.15)",
                 border: "1px solid rgba(97, 218, 251, 0.4)",
+                fontSize: "clamp(14px, 2vw, 16px)",
+                padding: "clamp(6px, 1.5vw, 8px) clamp(10px, 2vw, 12px)",
               }}
               {...createButtonHoverHandlers("rgba(97, 218, 251, 0.25)")}
             >
@@ -1056,11 +1092,11 @@ export default function MainPage() {
             </button>
           </div>
 
-          <div style={{ display: "flex", gap: "15px", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "15px", alignItems: "center", flexWrap: "wrap" }}>
             <button
               onClick={navigationHandlers.toAnimeList}
               title="View Anime List"
-              style={{ ...styles.buttonBase, marginLeft: "50px" }}
+              style={{ ...styles.buttonBase, marginLeft: "clamp(0px, 2vw, 50px)" }}
               {...createButtonHoverHandlers()}
             >
               📘 List

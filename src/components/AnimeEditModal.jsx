@@ -33,6 +33,7 @@ export default function AnimeEditModal({
   const [manualTime, setManualTime] = useState(displayIso);
   const [manualLink, setManualLink] = useState(anime.siteUrl || "");
   const [customName, setCustomName] = useState(anime.customTitle || "");
+  const [selectedProvider, setSelectedProvider] = useState(anime.siteUrl || "");
 
   React.useEffect(() => {
     setManualTime(displayIso);
@@ -46,6 +47,11 @@ export default function AnimeEditModal({
     setCustomName(anime.customTitle || "");
   }, [anime.customTitle]);
 
+  React.useEffect(() => {
+    setSelectedProvider(anime.siteUrl || "");
+    setManualLink(anime.siteUrl || "");
+  }, [anime.siteUrl]);
+
   function handleManualSave() {
     if (!manualTime) return;
     const newDate = new Date(manualTime);
@@ -56,21 +62,31 @@ export default function AnimeEditModal({
 
   // Implemented link management functions
   const onSaveLink = (animeId, newLink) => {
-    setAnimeList(prevList => 
-      prevList.map(animeItem => {
+    const trimmedLink = newLink.trim();
+    setAnimeList(prevList => {
+      const updated = prevList.map(animeItem => {
         if (animeItem.id === animeId) {
           // Store the original URL if this is the first time we're modifying it
           const originalSiteUrl = animeItem.originalSiteUrl || animeItem.siteUrl;
           
           return {
             ...animeItem,
-            siteUrl: newLink.trim(), // Save the new link (trimmed)
+            siteUrl: trimmedLink, // Save the new link (trimmed)
             originalSiteUrl: originalSiteUrl // Keep track of the original
           };
         }
         return animeItem;
-      })
-    );
+      });
+      // Save to localStorage
+      if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+          localStorage.setItem('watchingList', JSON.stringify(updated));
+        } catch (e) {
+          console.warn('Failed to save to localStorage:', e);
+        }
+      }
+      return updated;
+    });
     
     console.log(`Link updated for anime ${animeId}`);
   };
@@ -92,7 +108,10 @@ export default function AnimeEditModal({
   };
 
   function handleLinkSave() {
-    onSaveLink(anime.id, manualLink);
+    const trimmedLink = manualLink.trim();
+    onSaveLink(anime.id, trimmedLink);
+    // Update selected provider to match saved link
+    setSelectedProvider(trimmedLink);
   }
 
   function handleLinkReset() {
@@ -127,12 +146,14 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
       <div
         style={{
           width: "min(720px, 96vw)",
+          maxHeight: "90vh",
+          overflowY: "auto",
           background: "#1f1f1f",
           color: "#eee",
           borderRadius: 12,
           border: "1px solid rgba(97,218,251,0.25)",
           boxShadow: "0 10px 40px rgba(0,0,0,0.6)",
-          overflow: "hidden",
+          overflowX: "hidden",
         }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -141,9 +162,23 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
           <button onClick={onClose} style={{ background: "transparent", color: "#ccc", border: "none", fontSize: 20, cursor: "pointer" }}>×</button>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, padding: 16 }}>
-          <div style={{ gridColumn: "1 / -1", display: "flex", gap: 16 }}>
-            <img src={anime.coverImage?.extraLarge || anime.coverImage} alt={anime.title?.english || anime.title?.romaji || anime.title} style={{ width: 90, height: 135, objectFit: "cover", borderRadius: 8 }} />
+        <div style={{ 
+          display: "grid", 
+          gridTemplateColumns: "minmax(0, 1fr)",
+          gap: 16, 
+          padding: 16,
+        }}
+        className="modal-content-grid"
+        >
+          <style>{`
+            @media (min-width: 768px) {
+              .modal-content-grid {
+                grid-template-columns: 1fr 1fr !important;
+              }
+            }
+          `}</style>
+          <div style={{ gridColumn: "1 / -1", display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <img src={anime.coverImage?.extraLarge || anime.coverImage} alt={anime.title?.english || anime.title?.romaji || anime.title} style={{ width: 90, height: 135, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />
             <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
               <label style={{ fontSize: 12, color: "#aaa" }}>Name</label>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -188,12 +223,72 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
                 Original: {anime.title?.english || anime.title?.romaji || anime.title}
               </div>
 
-              <label style={{ fontSize: 12, color: "#aaa", marginTop: 8 }}>Link</label>
+              <label style={{ fontSize: 12, color: "#aaa", marginTop: 8 }}>Streaming Link</label>
+              
+              {/* Streaming Providers */}
+              {(anime.externalLinks && anime.externalLinks.length > 0) && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>Available Providers:</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    {anime.externalLinks.map((link) => {
+                      const isSelected = selectedProvider === link.url;
+                      const siteName = link.site || "Unknown";
+                      return (
+                        <button
+                          key={link.id || link.url}
+                          onClick={() => {
+                            setSelectedProvider(link.url);
+                            setManualLink(link.url);
+                          }}
+                          style={{
+                            background: isSelected ? "#61dafb" : "#444",
+                            color: isSelected ? "#000" : "#eee",
+                            border: `1px solid ${isSelected ? "#61dafb" : "#666"}`,
+                            borderRadius: 6,
+                            padding: "6px 10px",
+                            fontSize: 11,
+                            fontWeight: isSelected ? 700 : 400,
+                            cursor: "pointer",
+                            transition: "all 0.2s ease",
+                          }}
+                          title={link.url}
+                        >
+                          {siteName}
+                        </button>
+                      );
+                    })}
+                    {anime.siteUrl && (
+                      <button
+                        onClick={() => {
+                          setSelectedProvider(anime.siteUrl);
+                          setManualLink(anime.siteUrl);
+                        }}
+                        style={{
+                          background: selectedProvider === anime.siteUrl ? "#61dafb" : "#444",
+                          color: selectedProvider === anime.siteUrl ? "#000" : "#eee",
+                          border: `1px solid ${selectedProvider === anime.siteUrl ? "#61dafb" : "#666"}`,
+                          borderRadius: 6,
+                          padding: "6px 10px",
+                          fontSize: 11,
+                          fontWeight: selectedProvider === anime.siteUrl ? 700 : 400,
+                          cursor: "pointer",
+                        }}
+                      >
+                        AniList
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+              
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <input 
                   type="text" 
                   value={manualLink} 
-                  onChange={(e) => setManualLink(e.target.value)}
+                  onChange={(e) => {
+                    setManualLink(e.target.value);
+                    setSelectedProvider(e.target.value);
+                  }}
                   placeholder="Enter anime URL..."
                   style={{ flex: 1, padding: 10, borderRadius: 6, border: "1px solid #333", background: "#2a2a2a", color: "#eee" }} 
                 />
@@ -220,6 +315,22 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
               </div>
               {isLinkModified && (
                 <div style={{ fontSize: 12, color: "#ffa726" }}>Link has been modified from original</div>
+              )}
+              {selectedProvider && (
+                <a
+                  href={selectedProvider}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    fontSize: 12,
+                    color: "#61dafb",
+                    textDecoration: "none",
+                    marginTop: 4,
+                    display: "inline-block",
+                  }}
+                >
+                  Open link →
+                </a>
               )}
               {/* {!anime.originalSiteUrl && (
                 <div style={{ fontSize: 12, color: "#aaa" }}>No modifications made</div>

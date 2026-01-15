@@ -206,6 +206,11 @@ export async function fetchAnimeByNameWithDetails(searchName) {
         status
         siteUrl
         genres
+        externalLinks {
+          id
+          url
+          site
+        }
         nextAiringEpisode {
           episode
           airingAt
@@ -250,6 +255,11 @@ export async function fetchMultipleAnimeDetails(animeIds) {
             episodes
             siteUrl
             genres
+            externalLinks {
+              id
+              url
+              site
+            }
             nextAiringEpisode {
               episode
               airingAt
@@ -297,6 +307,11 @@ export async function fetchAiringSchedulesWithDetails(ids) {
             genres
             episodes
             status
+            externalLinks {
+              id
+              url
+              site
+            }
             nextAiringEpisode {
               episode
               airingAt
