@@ -1,16 +1,118 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import { app } from "../firebase";
 import CustomDropdown from "../components/CustomDropdown";
 import { loadWatchingList, saveWatchingList, loadCalendarList, saveCalendarList } from "../utils/storage";
 import { LIST_STATUS_OPTIONS, DEFAULT_LIST_STATUS } from "../constants/listStatuses";
+
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// Helper: save watching list to Firestore for given uid
+async function saveFirestoreWatchingList(uid, list) {
+  if (!uid) return;
+  try {
+    const docRef = doc(db, "users", uid);
+    await setDoc(docRef, { firebasewatchedlist: list }, { merge: true });
+  } catch (e) {
+    console.error("Error saving Firestore watching list:", e);
+  }
+}
+
+// Helper: save calendar list to Firestore for given uid
+async function saveFirestoreCalendarList(uid, list) {
+  if (!uid) return;
+  try {
+    const docRef = doc(db, "users", uid);
+    await setDoc(docRef, { firebasecalendarlist: list }, { merge: true });
+  } catch (e) {
+    console.error("Error saving Firestore calendar list:", e);
+  }
+}
+
+// Debounce utility
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
+function normalizeForSearch(input) {
+  return String(input || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function compact(input) {
+  return normalizeForSearch(input).replace(/\s+/g, "");
+}
+
+function isSubsequence(haystack, needle) {
+  if (!needle) return true;
+  let i = 0;
+  for (let j = 0; j < haystack.length && i < needle.length; j++) {
+    if (haystack[j] === needle[i]) i++;
+  }
+  return i === needle.length;
+}
+
+// Lower score = better match. Returns null if no match.
+function scoreMatch(titleRaw, queryRaw) {
+  const q = compact(queryRaw);
+  if (!q) return 0;
+
+  const title = compact(titleRaw);
+  if (!title) return null;
+
+  if (title === q) return 0;
+  if (title.startsWith(q)) return 5;
+  if (title.includes(q)) return 15;
+
+  // Fuzzy: allow abbreviations like "jjk" -> "jujutsukaisen"
+  if (isSubsequence(title, q)) {
+    const lengthPenalty = Math.min(40, Math.floor(title.length / 4));
+    return 30 + lengthPenalty;
+  }
+
+  return null;
+}
 
 
 export default function AnimeList() {
   const navigate = useNavigate();
   const [animeList, setAnimeList] = useState([]);
   const [filter, setFilter] = useState("All");
+  const [search, setSearch] = useState("");
+  const [animatedItems, setAnimatedItems] = useState([]);
   const [openDropdown, setOpenDropdown] = useState({});
   const [calendarList, setCalendarList] = useState(() => loadCalendarList());
+  const [user, setUser] = useState(null);
+  
+  // Debounced save function for Firebase
+  const debouncedSaveCalendarList = React.useRef(null);
+
+  useEffect(() => {
+    debouncedSaveCalendarList.current = debounce(saveCalendarList, 300);
+  }, []);
+
+  // Auth listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      setUser(firebaseUser);
+    });
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     const savedList = loadWatchingList();
@@ -25,9 +127,59 @@ export default function AnimeList() {
     setCalendarList(loadCalendarList());
   }, []);
 
-  const filteredList = animeList.filter((anime) =>
-    filter === "All" ? true : anime.listStatus === filter
-  );
+  const filteredList = animeList
+    .map((anime) => {
+      const title =
+        anime.title?.customTitle ||
+        anime.customTitle ||
+        anime.title?.english ||
+        anime.title?.romaji ||
+        "";
+      const s = scoreMatch(title, search);
+      return { anime, _score: s, _title: title };
+    })
+    .filter(({ anime, _score }) => {
+      const matchesStatus = filter === "All" ? true : anime.listStatus === filter;
+      if (!matchesStatus) return false;
+      if (!String(search || "").trim()) return true;
+      return _score !== null;
+    })
+    .sort((a, b) => {
+      const qTrim = String(search || "").trim();
+      if (!qTrim) return 0;
+      if (a._score !== b._score) return a._score - b._score;
+      return String(a._title || "").localeCompare(String(b._title || ""));
+    })
+    .map(({ anime }) => anime);
+
+  // Animate items in/out when filter/search changes
+  useEffect(() => {
+    setAnimatedItems((prev) => {
+      const nextIds = new Set(filteredList.map((a) => a.id));
+      const prevMap = new Map(prev.map((row) => [row.anime.id, row]));
+
+      // Keep visible items in the exact filtered order so matches move to the top.
+      const visibleRows = filteredList.map((anime) => {
+        const existing = prevMap.get(anime.id);
+        return existing
+          ? { ...existing, anime, state: "in" }
+          : { anime, state: "in" };
+      });
+
+      // Keep removed items temporarily for exit animation, after visible items.
+      const exitingRows = prev
+        .filter((row) => !nextIds.has(row.anime.id))
+        .map((row) => ({ ...row, state: "out" }));
+
+      return [...visibleRows, ...exitingRows];
+    });
+
+    const t = setTimeout(() => {
+      setAnimatedItems((prev) => prev.filter((row) => filteredList.some((a) => a.id === row.anime.id)));
+    }, 200);
+
+    return () => clearTimeout(t);
+  }, [filteredList]);
 
   const updateAnime = (id, changes) => {
     const updated = animeList.map((anime) =>
@@ -35,6 +187,9 @@ export default function AnimeList() {
     );
     setAnimeList(updated);
     saveWatchingList(updated);
+    if (user) {
+      debounce(() => saveFirestoreWatchingList(user.uid, updated), 500)();
+    }
   };
 
   const toggleDropdown = (animeId, field) => {
@@ -49,31 +204,60 @@ export default function AnimeList() {
       const isInCalendar = prev.some((entry) => entry.id === anime.id);
       if (isInCalendar) {
         const updated = prev.filter((entry) => entry.id !== anime.id);
-        saveCalendarList(updated);
+        if (debouncedSaveCalendarList.current) {
+          debouncedSaveCalendarList.current(updated);
+        }
+        if (user) {
+          debounce(() => saveFirestoreCalendarList(user.uid, updated), 500)();
+        }
         return updated;
       }
-      let episodesToAdd = (anime.fullAiringSchedule || []).map((ep) => ({
-        id: anime.id,
-        title: anime.title,
-        coverImage: anime.coverImage,
-        episode: ep.episode,
-        airingAt: ep.airingAt,
-        favorited: anime.favorited || false,
-      }));
-      if (episodesToAdd.length === 0 && anime.airingAt) {
+      // Add ALL episodes from fullAiringSchedule (past, present, and future)
+      let episodesToAdd = [];
+      
+      if (anime.fullAiringSchedule && anime.fullAiringSchedule.length > 0) {
+        // Use fullAiringSchedule which includes all episodes
+        episodesToAdd = anime.fullAiringSchedule.map((ep) => ({
+          id: anime.id,
+          title: anime.title,
+          coverImage: anime.coverImage,
+          episode: ep.episode,
+          airingAt: ep.airingAt,
+          favorited: anime.favorited || false,
+          siteUrl: anime.siteUrl,
+          externalLinks: anime.externalLinks || [],
+        }));
+      } else if (anime.airingAt && anime.episode) {
+        // Fallback: if no full schedule but has current episode info
         episodesToAdd = [{
           id: anime.id,
           title: anime.title,
           coverImage: anime.coverImage,
-          episode: anime.episode ?? null,
+          episode: anime.episode,
           airingAt: anime.airingAt,
           favorited: anime.favorited || false,
+          siteUrl: anime.siteUrl,
+          externalLinks: anime.externalLinks || [],
         }];
       }
+      
       const updated = [...prev, ...episodesToAdd];
-      saveCalendarList(updated);
+      if (debouncedSaveCalendarList.current) {
+        debouncedSaveCalendarList.current(updated);
+      }
+      if (user) {
+        debounce(() => saveFirestoreCalendarList(user.uid, updated), 500)();
+      }
       return updated;
     });
+  };
+
+  const handleBack = () => {
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+    navigate("/", { replace: true });
   };
 
 
@@ -89,7 +273,7 @@ export default function AnimeList() {
       {/* Back Button */}
       <div style={{ marginBottom: 16 }}>
         <button
-          onClick={() => navigate("/")}
+          onClick={handleBack}
           style={{
             backgroundColor: "#3c3c3c",
             color: "#fff",
@@ -126,15 +310,70 @@ export default function AnimeList() {
         ))}
       </div>
 
+      {/* Search */}
+      <div style={{ marginBottom: 16, display: "flex", gap: 10, alignItems: "center" }}>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search your anime..."
+          style={{
+            width: "100%",
+            maxWidth: 520,
+            padding: "10px 12px",
+            borderRadius: 8,
+            border: "1px solid #333",
+            backgroundColor: "#141414",
+            color: "#eee",
+            outline: "none",
+            boxShadow: "0 2px 10px rgba(0,0,0,0.25)",
+          }}
+        />
+        {search && (
+          <button
+            onClick={() => setSearch("")}
+            style={{
+              padding: "10px 12px",
+              borderRadius: 8,
+              border: "1px solid #333",
+              backgroundColor: "#2c2c2c",
+              color: "#fff",
+              cursor: "pointer",
+              fontWeight: 700,
+            }}
+            title="Clear search"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
       {/* Anime List */}
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {filteredList.map((anime) => {
+        <style>{`
+          .anime-row {
+            opacity: 0;
+            transform: translateY(8px);
+            transition: opacity 180ms ease, transform 180ms ease;
+            will-change: opacity, transform;
+          }
+          .anime-row.in {
+            opacity: 1;
+            transform: translateY(0);
+          }
+          .anime-row.out {
+            opacity: 0;
+            transform: translateY(8px);
+          }
+        `}</style>
+
+        {animatedItems.map(({ anime, state }) => {
           const maxEps = anime.episodes ?? 0;
           const isInCalendar = calendarList.some((entry) => entry.id === anime.id);
 
           return (
             <div
               key={anime.id}
+              className={`anime-row ${state}`}
               style={{
                 display: "flex",
                 alignItems: "center",

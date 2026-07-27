@@ -1,9 +1,54 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import { app } from "../firebase";
 import { loadCalendarList, saveCalendarList } from "../utils/storage";
 import WeekNavigation from "../components/WeekNavigation";
 import WeekView from "../components/WeekView";
 import UnwatchedList from "../components/UnwatchedList";
+
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// Helper: load calendar list from Firestore for given uid
+async function loadFirestoreCalendarList(uid) {
+  if (!uid) return [];
+  try {
+    const docRef = doc(db, "users", uid);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      return docSnap.data().firebasecalendarlist || [];
+    }
+  } catch (e) {
+    console.error("Error loading Firestore calendar list:", e);
+  }
+  return [];
+}
+
+// Helper: save calendar list to Firestore for given uid
+async function saveFirestoreCalendarList(uid, list) {
+  if (!uid) return;
+  try {
+    const docRef = doc(db, "users", uid);
+    await setDoc(docRef, { firebasecalendarlist: list }, { merge: true });
+  } catch (e) {
+    console.error("Error saving Firestore calendar list:", e);
+  }
+}
+
+// Debounce utility
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
 
 
 function addDays(date, days) {
@@ -36,6 +81,7 @@ export default function Calendar() {
   const navigate = useNavigate();
   const calendarRef = useRef(null);
   const [calendarList, setCalendarList] = useState(() => loadCalendarList());
+  const [user, setUser] = useState(null);
   const [startDate, setStartDate] = useState(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -49,6 +95,58 @@ export default function Calendar() {
 
   const [showUnwatched, setShowUnwatched] = useState(false);
   const [watchedState, setWatchedState] = useState({});
+  
+  // Debounced save function for Firebase
+  const debouncedSaveCalendarList = useRef(null);
+
+  useEffect(() => {
+    debouncedSaveCalendarList.current = debounce(saveCalendarList, 300);
+  }, []);
+
+  // Auth listener to sync calendar list from Firebase
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      setUser(firebaseUser);
+      if (firebaseUser) {
+        // Sync calendar list from Firestore
+        try {
+          const firestoreList = await loadFirestoreCalendarList(firebaseUser.uid);
+          const localList = loadCalendarList() || [];
+          
+          // Merge calendar lists - prefer entries with more recent data
+          const calendarMap = new Map();
+          
+          // Add local entries first (preserves local edits)
+          localList.forEach((ep) => {
+            const key = `${ep.id}-${ep.episode}`;
+            calendarMap.set(key, ep);
+          });
+          
+          // Add Firestore entries if not present locally
+          firestoreList.forEach((ep) => {
+            const key = `${ep.id}-${ep.episode}`;
+            if (!calendarMap.has(key)) {
+              calendarMap.set(key, ep);
+            }
+          });
+          
+          const merged = Array.from(calendarMap.values());
+          setCalendarList(merged);
+          
+          // Save merged back to Firestore and localStorage so both sides are synced
+          saveCalendarList(merged);
+          await saveFirestoreCalendarList(firebaseUser.uid, merged);
+        } catch (e) {
+          console.error("Error syncing calendar list:", e);
+        }
+      } else {
+        // Logged out: load localStorage only
+        const localList = loadCalendarList() || [];
+        setCalendarList(localList);
+      }
+    });
+    return unsubscribe;
+  }, []);
 
   // Refresh watchedState from localStorage when opening the drawer
   useEffect(() => {
@@ -62,8 +160,13 @@ export default function Calendar() {
   }, [showUnwatched]);
 
   useEffect(() => {
-    saveCalendarList(calendarList);
-  }, [calendarList]);
+    if (debouncedSaveCalendarList.current) {
+      debouncedSaveCalendarList.current(calendarList);
+    }
+    if (user) {
+      debounce(() => saveFirestoreCalendarList(user.uid, calendarList), 500)();
+    }
+  }, [calendarList, user]);
 
   useEffect(() => {
     // Allow normal page scrolling, especially on mobile/tablet
@@ -130,7 +233,13 @@ export default function Calendar() {
   const weekDates = getWeekDates(startDate);
 
   function handleRemoveFromCalendar(id) {
-    setCalendarList((prev) => prev.filter((a) => a.id !== id));
+    setCalendarList((prev) => {
+      const filtered = prev.filter((a) => a.id !== id);
+      if (user) {
+        debounce(() => saveFirestoreCalendarList(user.uid, filtered), 500)();
+      }
+      return filtered;
+    });
   }
 
   // Navigation handlers

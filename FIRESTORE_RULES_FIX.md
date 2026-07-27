@@ -58,3 +58,5 @@ service cloud.firestore {
 2. Wait a few seconds for rules to propagate
 3. Try logging in/signing up again
 
+
+

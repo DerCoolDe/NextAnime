@@ -8,6 +8,22 @@ import { app } from "../firebase";
 const auth = getAuth(app);
 const db = getFirestore(app);
 
+function mergeAnimeLists(localList, cloudList) {
+  const mergedMap = new Map();
+
+  (localList || []).forEach((anime) => {
+    mergedMap.set(anime.id, anime);
+  });
+
+  (cloudList || []).forEach((anime) => {
+    if (!mergedMap.has(anime.id)) {
+      mergedMap.set(anime.id, anime);
+    }
+  });
+
+  return Array.from(mergedMap.values());
+}
+
 export default function UserPage() {
   const navigate = useNavigate();
   const [userData, setUserData] = useState(null);
@@ -52,7 +68,7 @@ export default function UserPage() {
 
     async function fetchWatchingList() {
       const savedList = loadWatchingList() || [];
-      setWatchingList(savedList);
+      let firebaseList = [];
 
       try {
         const userDocRef = doc(db, "users", currentUser.uid);
@@ -60,13 +76,17 @@ export default function UserPage() {
 
         if (userDocSnap.exists()) {
           const data = userDocSnap.data();
-          const firebaseList = data.firebasewatchedlist || data.firebaseWatchingList || [];
-          setCloudList(firebaseList);
+          firebaseList = data.firebasewatchedlist || data.firebaseWatchingList || [];
         }
       } catch (err) {
         console.error("Error fetching watching list:", err);
       }
 
+      const mergedList = mergeAnimeLists(savedList, firebaseList);
+      setWatchingList(mergedList);
+      setCloudList(firebaseList);
+      // Keep local storage in sync with cloud as soon as page loads.
+      saveWatchingList(mergedList);
       setIsWatchingListLoaded(true);
     }
 

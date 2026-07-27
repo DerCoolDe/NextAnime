@@ -82,6 +82,32 @@ async function saveFirestoreWatchingList(uid, list) {
   }
 }
 
+// Helper: load calendar list from Firestore for given uid
+async function loadFirestoreCalendarList(uid) {
+  if (!uid) return [];
+  try {
+    const docRef = doc(db, "users", uid);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      return docSnap.data().firebasecalendarlist || [];
+    }
+  } catch (e) {
+    console.error("Error loading Firestore calendar list:", e);
+  }
+  return [];
+}
+
+// Helper: save calendar list to Firestore for given uid
+async function saveFirestoreCalendarList(uid, list) {
+  if (!uid) return;
+  try {
+    const docRef = doc(db, "users", uid);
+    await setDoc(docRef, { firebasecalendarlist: list }, { merge: true });
+  } catch (e) {
+    console.error("Error saving Firestore calendar list:", e);
+  }
+}
+
 // Provider priority order: higher number = higher priority
 const PROVIDER_PRIORITY = {
   "Crunchyroll": 5,
@@ -159,6 +185,38 @@ function normalizeAnimeList(list) {
   return (list || []).map(normalizeAnimeEntry);
 }
 
+// Ensure every anime that appears in the calendar also exists in the watching list
+function ensureWatchingFromCalendar(watchingList, calendarList) {
+  const byId = new Map((watchingList || []).map((a) => [a.id, a]));
+  const additions = [];
+  const seen = new Set();
+
+  (calendarList || []).forEach((ep) => {
+    if (!ep?.id) return;
+    if (seen.has(ep.id) || byId.has(ep.id)) return;
+    seen.add(ep.id);
+
+    additions.push(
+      normalizeAnimeEntry({
+        id: ep.id,
+        title: ep.title,
+        coverImage: ep.coverImage,
+        // We only know the streaming link info stored on the calendar entry
+        siteUrl: ep.siteUrl || ep.externalLinks?.[0]?.url || "",
+        externalLinks: ep.externalLinks || [],
+        favorited: ep.favorited || false,
+        episodes: 0,
+        status: "UNKNOWN",
+        watchedEpisodes: 0,
+        score: 0,
+        listStatus: DEFAULT_LIST_STATUS,
+      })
+    );
+  });
+
+  if (additions.length === 0) return watchingList;
+  return [...(watchingList || []), ...additions];
+}
 function fixAiringTimes(watchingList) {
   const now = Date.now() / 1000;
 
@@ -312,6 +370,7 @@ export default function MainPage() {
   const [username, setUsername] = useState(null);
   const prevWatchingListIds = useRef(new Set());
   const prevWatchingList = useRef([]);
+  const autoRefreshIntervalRef = useRef(null);
 
   // Debounced functions for better performance
   const debouncedSaveWatchingList = useRef(null);
@@ -333,6 +392,52 @@ export default function MainPage() {
       clearTimeout(timeout);
       timeout = setTimeout(later, wait);
     };
+  }
+
+  const AUTO_REFRESH_INTERVAL_MS = 1000 * 60 * 60 * 3; // 3 hours
+  const AUTO_REFRESH_SOON_WINDOW_SEC = 60 * 60 * 24 * 14; // 14 days
+  const AUTO_REFRESH_LAST_KEY = "lastAutoAnimeRefreshAt";
+
+  function shouldAutoRefreshNow() {
+    try {
+      const last = Number(localStorage.getItem(AUTO_REFRESH_LAST_KEY) || "0");
+      return !last || Date.now() - last >= AUTO_REFRESH_INTERVAL_MS;
+    } catch {
+      return true;
+    }
+  }
+
+  function markAutoRefreshRun() {
+    try {
+      localStorage.setItem(AUTO_REFRESH_LAST_KEY, String(Date.now()));
+    } catch {}
+  }
+
+  function pickAnimeIdsToAutoRefresh(list) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const ids = [];
+
+    for (const anime of list || []) {
+      if (!anime?.id) continue;
+      if (anime.status === "FINISHED") continue;
+
+      // If we already have fresh cached details (24h TTL in cacheUtils), skip.
+      const cached = getCachedAnimeDetails(anime.id);
+      if (cached) continue;
+
+      const nextAiringAt = anime.nextAiringEpisode?.airingAt || anime.airingAt || null;
+      const hasSchedule = Array.isArray(anime.fullAiringSchedule) && anime.fullAiringSchedule.length > 0;
+
+      // Refresh if we don't have schedule data, or the next airing is soon.
+      const airingSoon =
+        typeof nextAiringAt === "number" && nextAiringAt > nowSec && nextAiringAt - nowSec <= AUTO_REFRESH_SOON_WINDOW_SEC;
+
+      if (!hasSchedule || airingSoon || nextAiringAt == null) {
+        ids.push(anime.id);
+      }
+    }
+
+    return ids;
   }
 
   // Memoized completed anime checker
@@ -418,9 +523,25 @@ export default function MainPage() {
         }
         // On login, sync Firestore + localStorage lists
         await syncWatchingList(firebaseUser.uid);
+        await syncCalendarList(firebaseUser.uid);
+
+        // Kick off an auto-refresh (rate-limited) and keep it running every 3 hours.
+        // Clear any previous interval first.
+        if (autoRefreshIntervalRef.current) {
+          clearInterval(autoRefreshIntervalRef.current);
+          autoRefreshIntervalRef.current = null;
+        }
+        autoRefreshAnimeData(false);
+        autoRefreshIntervalRef.current = setInterval(() => {
+          autoRefreshAnimeData(false);
+        }, AUTO_REFRESH_INTERVAL_MS);
       } else {
         // Logged out: clear username and load localStorage only
         setUsername(null);
+        if (autoRefreshIntervalRef.current) {
+          clearInterval(autoRefreshIntervalRef.current);
+          autoRefreshIntervalRef.current = null;
+        }
         const localList = loadWatchingList() || [];
         const fixedList = fixAiringTimes(localList);
         setWatchingList(fixedList);
@@ -429,6 +550,16 @@ export default function MainPage() {
       }
     });
     return unsubscribe;
+  }, []);
+
+  // Cleanup interval on unmount
+  useEffect(() => {
+    return () => {
+      if (autoRefreshIntervalRef.current) {
+        clearInterval(autoRefreshIntervalRef.current);
+        autoRefreshIntervalRef.current = null;
+      }
+    };
   }, []);
 
   // Sync Firestore and localStorage watching lists without deleting local data
@@ -451,17 +582,50 @@ export default function MainPage() {
     }
   }, []);
 
-  // On mount: if no user logged in yet, load localStorage list
-  useEffect(() => {
-    if (!user) {
-      const localList = loadWatchingList() || [];
-      const fixedList = fixAiringTimes(localList);
-      const normalized = normalizeAnimeList(fixedList);
-      setWatchingList(normalized);
-      prevWatchingListIds.current = new Set(normalized.map((a) => a.id));
-      prevWatchingList.current = normalized;
+  // Sync Firestore and localStorage calendar lists without deleting local data
+  const syncCalendarList = useCallback(async (uid) => {
+    try {
+      const firestoreList = await loadFirestoreCalendarList(uid);
+      const localList = loadCalendarList() || [];
+      
+      // Merge calendar lists - prefer entries with more recent data
+      // Use a map to avoid duplicates by anime id + episode
+      const calendarMap = new Map();
+      
+      // Add local entries first (preserves local edits)
+      localList.forEach((ep) => {
+        const key = `${ep.id}-${ep.episode}`;
+        calendarMap.set(key, ep);
+      });
+      
+      // Add Firestore entries if not present locally
+      firestoreList.forEach((ep) => {
+        const key = `${ep.id}-${ep.episode}`;
+        if (!calendarMap.has(key)) {
+          calendarMap.set(key, ep);
+        }
+      });
+      
+      const merged = Array.from(calendarMap.values());
+      setCalendarList(merged);
+
+      // Make sure every calendar anime has a corresponding watching-list entry
+      setWatchingList((prevWatching) => {
+        const updatedWatching = ensureWatchingFromCalendar(prevWatching, merged);
+        if (updatedWatching !== prevWatching) {
+          saveWatchingList(updatedWatching);
+          saveFirestoreWatchingList(uid, updatedWatching);
+        }
+        return updatedWatching;
+      });
+
+      // Save merged back to Firestore and localStorage so both sides are synced
+      saveCalendarList(merged);
+      await saveFirestoreCalendarList(uid, merged);
+    } catch (e) {
+      console.error("Error syncing calendar list:", e);
     }
-  }, [user]);
+  }, []);
 
   // Optimized update and persist function
   const applyUpdateAndPersist = useCallback((updatedList) => {
@@ -493,8 +657,79 @@ export default function MainPage() {
       if (debouncedSaveCalendarList.current) {
         debouncedSaveCalendarList.current(updatedCalendar);
       }
+      if (user) {
+        debounce(() => saveFirestoreCalendarList(user.uid, updatedCalendar), 500)();
+      }
       return updatedCalendar;
     });
+  }, [user]);
+
+  // Auto refresh: use the shared applyUpdateAndPersist helper
+  const autoRefreshAnimeData = useCallback(async (force = false) => {
+    if (!user) return;
+    if (!force && !shouldAutoRefreshNow()) return;
+    if (!watchingList?.length) return;
+
+    const idsToRefresh = pickAnimeIdsToAutoRefresh(watchingList);
+    if (idsToRefresh.length === 0) {
+      markAutoRefreshRun();
+      return;
+    }
+
+    try {
+      const updatedAnimeData = await fetchMultipleAnimeDetails(idsToRefresh);
+      if (!updatedAnimeData?.length) {
+        markAutoRefreshRun();
+        return;
+      }
+
+      const updatedList = watchingList.map((anime) => {
+        const freshData = updatedAnimeData.find((a) => a?.id === anime.id);
+        if (!freshData) return anime;
+
+        setCachedAnimeDetails(anime.id, freshData);
+
+        const preservedSiteUrl = anime.siteUrl || freshData.siteUrl;
+        const preservedExternalLinks =
+          (anime.externalLinks && anime.externalLinks.length > 0)
+            ? anime.externalLinks
+            : (freshData.externalLinks || []);
+
+        return normalizeAnimeEntry({
+          ...anime,
+          title: freshData.title || anime.title,
+          coverImage: freshData.coverImage || anime.coverImage,
+          episodes: freshData.episodes ?? anime.episodes,
+          status: freshData.status || anime.status,
+          siteUrl: preservedSiteUrl,
+          genres: freshData.genres || anime.genres,
+          externalLinks: preservedExternalLinks,
+          fullAiringSchedule: freshData.airingSchedule?.nodes || anime.fullAiringSchedule,
+          nextAiringEpisode: freshData.nextAiringEpisode ?? null,
+          airingAt: freshData.nextAiringEpisode?.airingAt ?? anime.airingAt,
+          episode: freshData.nextAiringEpisode?.episode ?? anime.episode,
+        });
+      });
+
+      applyUpdateAndPersist(updatedList);
+      markAutoRefreshRun();
+    } catch (err) {
+      console.error("Auto refresh failed:", err);
+      // Don't spam errors in UI for background refreshes.
+      markAutoRefreshRun();
+    }
+  }, [user, watchingList, applyUpdateAndPersist]);
+
+  // On mount: if no user logged in yet, load localStorage list
+  useEffect(() => {
+    if (!user) {
+      const localList = loadWatchingList() || [];
+      const fixedList = fixAiringTimes(localList);
+      const normalized = normalizeAnimeList(fixedList);
+      setWatchingList(normalized);
+      prevWatchingListIds.current = new Set(normalized.map((a) => a.id));
+      prevWatchingList.current = normalized;
+    }
   }, [user]);
 
   const handleChangeListStatus = useCallback((id, nextStatus) => {
@@ -533,9 +768,12 @@ export default function MainPage() {
       if (debouncedSaveCalendarList.current) {
         debouncedSaveCalendarList.current(updatedCalendar);
       }
+      if (user) {
+        debounce(() => saveFirestoreCalendarList(user.uid, updatedCalendar), 500)();
+      }
       return updatedCalendar;
     });
-  }, [watchingList, applyUpdateAndPersist]);
+  }, [watchingList, applyUpdateAndPersist, user]);
 
 
   // Fetch general upcoming anime (with caching)
@@ -634,7 +872,10 @@ export default function MainPage() {
     if (debouncedSaveCalendarList.current) {
       debouncedSaveCalendarList.current(calendarList);
     }
-  }, [calendarList]);
+    if (user) {
+      debounce(() => saveFirestoreCalendarList(user.uid, calendarList), 500)();
+    }
+  }, [calendarList, user]);
 
   // Sync calendar list with current favorite status, siteUrl, and externalLinks from watching list
   useEffect(() => {
@@ -655,10 +896,13 @@ export default function MainPage() {
         if (debouncedSaveCalendarList.current) {
           debouncedSaveCalendarList.current(updatedCalendar);
         }
+        if (user) {
+          debounce(() => saveFirestoreCalendarList(user.uid, updatedCalendar), 500)();
+        }
         return updatedCalendar;
       });
     }
-  }, [watchingList]);
+  }, [watchingList, user]);
 
   // Track watching list changes for optimization
   useEffect(() => {
@@ -824,27 +1068,52 @@ export default function MainPage() {
         if (debouncedSaveCalendarList.current) {
           debouncedSaveCalendarList.current(filtered);
         }
+        if (user) {
+          debounce(() => saveFirestoreCalendarList(user.uid, filtered), 500)();
+        }
         return filtered;
       } else {
-        const episodesToAdd = (anime.fullAiringSchedule || []).map((ep) => ({
-          id: anime.id,
-          title: anime.title,
-          coverImage: anime.coverImage,
-          episode: ep.episode,
-          airingAt: ep.airingAt,
-          favorited: anime.favorited || false,
-          siteUrl: anime.siteUrl,
-          externalLinks: anime.externalLinks || [],
-        }));
+        // Add ALL episodes from fullAiringSchedule (past, present, and future)
+        // This ensures all episodes are available on the calendar
+        let episodesToAdd = [];
+        
+        if (anime.fullAiringSchedule && anime.fullAiringSchedule.length > 0) {
+          // Use fullAiringSchedule which includes all episodes
+          episodesToAdd = anime.fullAiringSchedule.map((ep) => ({
+            id: anime.id,
+            title: anime.title,
+            coverImage: anime.coverImage,
+            episode: ep.episode,
+            airingAt: ep.airingAt,
+            favorited: anime.favorited || false,
+            siteUrl: anime.siteUrl,
+            externalLinks: anime.externalLinks || [],
+          }));
+        } else if (anime.airingAt && anime.episode) {
+          // Fallback: if no full schedule but has current episode info
+          episodesToAdd = [{
+            id: anime.id,
+            title: anime.title,
+            coverImage: anime.coverImage,
+            episode: anime.episode,
+            airingAt: anime.airingAt,
+            favorited: anime.favorited || false,
+            siteUrl: anime.siteUrl,
+            externalLinks: anime.externalLinks || [],
+          }];
+        }
 
         const updated = [...prev, ...episodesToAdd];
         if (debouncedSaveCalendarList.current) {
           debouncedSaveCalendarList.current(updated);
         }
+        if (user) {
+          debounce(() => saveFirestoreCalendarList(user.uid, updated), 500)();
+        }
         return updated;
       }
     });
-  }, []);
+  }, [user]);
 
   const deleteAnime = useCallback((id) => {
     const filtered = watchingList.filter((a) => a.id !== id);
@@ -859,6 +1128,9 @@ export default function MainPage() {
     setCalendarList(filteredCalendar);
     if (debouncedSaveCalendarList.current) {
       debouncedSaveCalendarList.current(filteredCalendar);
+    }
+    if (user) {
+      debounce(() => saveFirestoreCalendarList(user.uid, filteredCalendar), 500)();
     }
   }, [watchingList, user, calendarList]);
 
@@ -952,6 +1224,9 @@ export default function MainPage() {
         if (debouncedSaveCalendarList.current) {
           debouncedSaveCalendarList.current(updatedCalendar);
         }
+        if (user) {
+          debounce(() => saveFirestoreCalendarList(user.uid, updatedCalendar), 500)();
+        }
         return updatedCalendar;
       });
     }
@@ -1030,6 +1305,9 @@ export default function MainPage() {
         });
         if (debouncedSaveCalendarList.current) {
           debouncedSaveCalendarList.current(updatedCalendar);
+        }
+        if (user) {
+          debounce(() => saveFirestoreCalendarList(user.uid, updatedCalendar), 500)();
         }
         return updatedCalendar;
       });
