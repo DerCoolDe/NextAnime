@@ -1,7 +1,15 @@
 import React, { useEffect, useState } from "react";
 import DayColumn from "./DayColumn";
 
-export default function WeekView({ weekDates, animeByDate, onRemove, isCurrentWeek }) {
+export default function WeekView({
+  weekDates,
+  animeByDate,
+  onRemove,
+  isCurrentWeek,
+  watchProgress,
+  onToggleEpisodeWatch,
+  onOpenEpisodePanel,
+}) {
   const [columns, setColumns] = useState(7);
 
   useEffect(() => {
@@ -55,13 +63,16 @@ export default function WeekView({ weekDates, animeByDate, onRemove, isCurrentWe
         const animesForDay = animeByDate[key] || [];
 
         return (
-          <DayColumn 
-            key={key} 
-            date={date} 
-            animes={animesForDay} 
+          <DayColumn
+            key={key}
+            date={date}
+            animes={animesForDay}
             onRemove={onRemove}
             isGrid={isGrid}
             isCurrentWeek={isCurrentWeek}
+            watchProgress={watchProgress}
+            onToggleEpisodeWatch={onToggleEpisodeWatch}
+            onOpenEpisodePanel={onOpenEpisodePanel}
           />
         );
       })}

@@ -1,8 +1,13 @@
 import React, { useEffect, useRef } from "react";
 import { notifyDiscordBot } from "../utils/DiscordNotifier";
 
-export default function NewRelease({ watchingList }) {
+function NewRelease({ watchingList }) {
   const notifiedReleases = useRef(new Set());
+  const watchingListRef = useRef(watchingList);
+
+  useEffect(() => {
+    watchingListRef.current = watchingList;
+  }, [watchingList]);
 
   useEffect(() => {
     const saved = localStorage.getItem("notifiedReleases");
@@ -14,33 +19,31 @@ export default function NewRelease({ watchingList }) {
       }
     }
 
-    const testing = false; // ← Change to true to enable test anime
+    const testing = false;
 
     const testAnime = {
       id: 999992,
       title: { english: "Test Anime", romaji: "Test Anime" },
       coverImage: {
-        extraLarge: "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx178754-Dgrub8xgC03M.jpg",
+        extraLarge:
+          "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx178754-Dgrub8xgC03M.jpg",
       },
       nextAiringEpisode: {
         episode: 999,
-        airingAt: Math.floor(Date.now() / 1000) - 120, // 2 minutes ago
+        airingAt: Math.floor(Date.now() / 1000) - 120,
       },
     };
 
-    if (testing) console.log("✅ Test anime injected");
-
-    const listToCheck = testing ? [testAnime, ...watchingList] : watchingList;
-
     async function checkReleases() {
-      console.log("🔍 Checking releases...");
+      const listToCheck = testing
+        ? [testAnime, ...watchingListRef.current]
+        : watchingListRef.current;
+
       const now = Math.floor(Date.now() / 1000);
       let newReleasesFound = false;
 
       for (const anime of listToCheck) {
-        // Skip completed anime
         if (anime.status === "FINISHED") continue;
-        
         if (!anime.nextAiringEpisode) continue;
 
         const ep = anime.nextAiringEpisode.episode;
@@ -64,22 +67,21 @@ export default function NewRelease({ watchingList }) {
           const title = anime.title.english || anime.title.romaji || "Unknown Anime";
           const imageUrl = anime.coverImage?.extraLarge || null;
 
-          console.log(`📣 Notifying Discord about ${title} episode ${ep}`);
           await notifyDiscordBot(`${title} episode ${ep} just released!`, imageUrl);
-
           newReleasesFound = true;
         }
       }
 
-      if (!newReleasesFound) {
+      if (!newReleasesFound && testing) {
         console.log("ℹ️ No new releases at this time.");
       }
     }
 
-    // checkReleases(); // Initial check
-    const interval = setInterval(checkReleases, 60 * 1000); // Every 60s
+    const interval = setInterval(checkReleases, 60 * 1000);
     return () => clearInterval(interval);
-  }, [watchingList]);
+  }, []);
 
   return null;
 }
+
+export default React.memo(NewRelease);

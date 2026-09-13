@@ -1,83 +1,26 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import {
+  PROVIDER_PRIORITY_CHANGED_EVENT,
+  getAniListUrl,
+  getBestProviderUrl,
+  loadProviderPriorityOrder,
+  sortProvidersByPriority,
+} from "../utils/providerPriority";
+import ReleaseDateTimePicker from "./ReleaseDateTimePicker";
 
-// Provider priority order: higher number = higher priority
-const PROVIDER_PRIORITY = {
-  "Crunchyroll": 5,
-  "Netflix": 4,
-  "Prime Video": 3,
-  "Disney+": 2,
-  "AniList": 1,
-};
-
-// Get priority for a provider name (case-insensitive)
-function getProviderPriority(siteName) {
-  if (!siteName) return 0;
-  const normalized = siteName.toLowerCase();
-  for (const [key, priority] of Object.entries(PROVIDER_PRIORITY)) {
-    if (normalized.includes(key.toLowerCase())) {
-      return priority;
-    }
-  }
-  return 0;
-}
-
-// Get the best provider URL based on priority
-function getBestProviderUrl(anime) {
+function titleText(anime) {
   if (!anime) return "";
-  
-  // If user has set a custom siteUrl, use that first
-  if (anime.siteUrl) {
-    // Check if it's a priority provider
-    const externalLink = anime.externalLinks?.find(link => link.url === anime.siteUrl);
-    if (externalLink) {
-      const priority = getProviderPriority(externalLink.site);
-      if (priority > 0) {
-        return anime.siteUrl;
-      }
-    }
-  }
-  
-  // Otherwise, find the highest priority provider from externalLinks
-  if (anime.externalLinks && anime.externalLinks.length > 0) {
-    const sorted = [...anime.externalLinks].sort((a, b) => {
-      const priorityA = getProviderPriority(a.site);
-      const priorityB = getProviderPriority(b.site);
-      return priorityB - priorityA; // Higher priority first
-    });
-    
-    // Return the highest priority provider
-    if (sorted[0]) {
-      return sorted[0].url;
-    }
-  }
-  
-  // Fallback to AniList siteUrl
-  return anime.siteUrl || "";
+  if (anime.customTitle) return anime.customTitle;
+  if (typeof anime.title === "string") return anime.title;
+  return anime.title?.english || anime.title?.romaji || anime.title?.native || "";
 }
 
-// Sort providers by priority
-function sortProvidersByPriority(links, siteUrl) {
-  const allLinks = [];
-  
-  // Add external links
-  if (links && links.length > 0) {
-    allLinks.push(...links.map(link => ({ ...link, isAniList: false })));
-  }
-  
-  // Add AniList if available
-  if (siteUrl) {
-    allLinks.push({ url: siteUrl, site: "AniList", isAniList: true });
-  }
-  
-  // Sort by priority (higher first), then alphabetically
-  return allLinks.sort((a, b) => {
-    const priorityA = getProviderPriority(a.site);
-    const priorityB = getProviderPriority(b.site);
-    if (priorityA !== priorityB) {
-      return priorityB - priorityA; // Higher priority first
-    }
-    return (a.site || "").localeCompare(b.site || "");
-  });
+function coverUrl(anime) {
+  const cover = anime?.coverImage;
+  if (!cover) return "";
+  if (typeof cover === "string") return cover;
+  return cover.extraLarge || cover.large || cover.medium || "";
 }
 
 export default function AnimeEditModal({
@@ -94,9 +37,17 @@ export default function AnimeEditModal({
   setAnimeList,
   onRename,
 }) {
-  if (!isOpen || !anime) return null;
+  const [providerOrder, setProviderOrder] = useState(() => loadProviderPriorityOrder());
 
-  const currentAdjustedTs = anime.airingAt || null; // seconds
+  useEffect(() => {
+    const onChange = (event) => {
+      setProviderOrder(event.detail || loadProviderPriorityOrder());
+    };
+    window.addEventListener(PROVIDER_PRIORITY_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(PROVIDER_PRIORITY_CHANGED_EVENT, onChange);
+  }, []);
+
+  const currentAdjustedTs = anime?.airingAt || null; // seconds
   const displayIso = useMemo(() => {
     if (!currentAdjustedTs) return "";
     const d = new Date(currentAdjustedTs * 1000);
@@ -110,46 +61,71 @@ export default function AnimeEditModal({
     return `${yyyy}-${MM}-${dd}T${hh}:${mm}`;
   }, [currentAdjustedTs]);
 
-  // Get the best provider URL based on priority
-  const bestProviderUrl = useMemo(() => getBestProviderUrl(anime), [anime]);
-  
-  // Get sorted providers
-  const sortedProviders = useMemo(() => 
-    sortProvidersByPriority(anime.externalLinks, anime.siteUrl), 
-    [anime.externalLinks, anime.siteUrl]
+  const anilistUrl = useMemo(
+    () => (anime ? getAniListUrl(anime, anime.originalSiteUrl || "") : ""),
+    [anime]
   );
 
-  const [manualTime, setManualTime] = useState(displayIso);
-  const [manualLink, setManualLink] = useState(anime.siteUrl || bestProviderUrl);
-  const [customName, setCustomName] = useState(anime.customTitle || "");
-  const [selectedProvider, setSelectedProvider] = useState(anime.siteUrl || bestProviderUrl);
+  // Get the best provider URL based on priority
+  const bestProviderUrl = useMemo(
+    () => (anime ? getBestProviderUrl(anime, providerOrder) : ""),
+    [anime, providerOrder]
+  );
 
-  React.useEffect(() => {
+  // Get sorted providers
+  const sortedProviders = useMemo(
+    () =>
+      anime
+        ? sortProvidersByPriority(anime.externalLinks, anilistUrl, providerOrder)
+        : [],
+    [anime, anilistUrl, providerOrder]
+  );
+
+  const [manualTime, setManualTime] = useState("");
+  const [manualLink, setManualLink] = useState("");
+  const [customName, setCustomName] = useState("");
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const linkSaveTimerRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (linkSaveTimerRef.current) {
+        clearTimeout(linkSaveTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     setManualTime(displayIso);
   }, [displayIso]);
 
-  React.useEffect(() => {
-    // Use best provider if no custom siteUrl is set
+  useEffect(() => {
+    if (!anime) return;
     const urlToUse = anime.siteUrl || bestProviderUrl;
     setManualLink(urlToUse);
-  }, [anime.siteUrl, bestProviderUrl]);
+  }, [anime, bestProviderUrl]);
 
-  React.useEffect(() => {
+  useEffect(() => {
+    if (!anime) return;
     setCustomName(anime.customTitle || "");
-  }, [anime.customTitle]);
+  }, [anime]);
 
-  React.useEffect(() => {
-    // Auto-select best provider when modal opens or anime changes
+  useEffect(() => {
+    if (!anime) return;
     const urlToUse = anime.siteUrl || bestProviderUrl;
     setSelectedProvider(urlToUse);
     setManualLink(urlToUse);
-  }, [anime.siteUrl, bestProviderUrl, isOpen]);
+  }, [anime, bestProviderUrl, isOpen]);
 
-  function handleManualSave() {
-    if (!manualTime) return;
-    const newDate = new Date(manualTime);
+  if (!isOpen || !anime) return null;
+
+  function handleReleaseTimeChange(value) {
+    setManualTime(value);
+    if (!value) return;
+    const newDate = new Date(value);
     if (isNaN(newDate.getTime())) return;
     const newTsSeconds = Math.floor(newDate.getTime() / 1000);
+    if (currentAdjustedTs && newTsSeconds === currentAdjustedTs) return;
     onSaveReleaseTimestamp(anime.id, newTsSeconds);
   }
 
@@ -194,39 +170,81 @@ export default function AnimeEditModal({
     console.log(`Link reset to original for anime ${animeId}`);
   };
 
-  function handleLinkSave() {
-    const trimmedLink = manualLink.trim();
-    onSaveLink(anime.id, trimmedLink);
-    // Update selected provider to match saved link
-    setSelectedProvider(trimmedLink);
+  function handleLinkReset() {
+    if (linkSaveTimerRef.current) {
+      clearTimeout(linkSaveTimerRef.current);
+      linkSaveTimerRef.current = null;
+    }
+    onResetLink(anime.id);
+    setManualLink(anime.originalSiteUrl || anime.siteUrl || "");
+    setSelectedProvider(anime.originalSiteUrl || anime.siteUrl || "");
   }
 
-  function handleLinkReset() {
-    onResetLink(anime.id);
-    // Reset the input field to the original value
-    setManualLink(anime.originalSiteUrl || anime.siteUrl || "");
+  function persistLink(url) {
+    const trimmed = String(url || "").trim();
+    setSelectedProvider(trimmed);
+    setManualLink(trimmed);
+    if (!trimmed || trimmed === (anime.siteUrl || "").trim()) return;
+    onSaveLink(anime.id, trimmed);
+  }
+
+  function handleProviderSelect(url) {
+    if (linkSaveTimerRef.current) {
+      clearTimeout(linkSaveTimerRef.current);
+      linkSaveTimerRef.current = null;
+    }
+    persistLink(url);
+  }
+
+  function handleLinkInputChange(value) {
+    setManualLink(value);
+    setSelectedProvider(value);
+    if (linkSaveTimerRef.current) {
+      clearTimeout(linkSaveTimerRef.current);
+    }
+    linkSaveTimerRef.current = setTimeout(() => {
+      const trimmed = value.trim();
+      if (!trimmed || trimmed === (anime.siteUrl || "").trim()) return;
+      onSaveLink(anime.id, trimmed);
+    }, 400);
+  }
+
+  function handleLinkInputBlur() {
+    if (linkSaveTimerRef.current) {
+      clearTimeout(linkSaveTimerRef.current);
+      linkSaveTimerRef.current = null;
+    }
+    const trimmed = manualLink.trim();
+    if (!trimmed || trimmed === (anime.siteUrl || "").trim()) return;
+    onSaveLink(anime.id, trimmed);
   }
 
   function handleKeyDown(e) {
     if (e.key === "Escape") onClose();
   }
 
-const originalUrl = anime.originalSiteUrl || anime.siteUrl || "";
-const isLinkModified = manualLink.trim() !== originalUrl.trim();
+  const originalUrl = anime.originalSiteUrl || anime.siteUrl || "";
+  const isLinkModified = manualLink.trim() !== originalUrl.trim();
+  const displayTitle = titleText(anime);
+  const imageSrc = coverUrl(anime);
 
-  return (
+  return createPortal(
     <div
       onKeyDown={handleKeyDown}
       tabIndex={-1}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Edit anime"
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,0.6)",
-        zIndex: 2000,
+        background: "rgba(0,0,0,0.65)",
+        zIndex: 10000,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         padding: 16,
+        boxSizing: "border-box",
       }}
       onClick={onClose}
     >
@@ -246,7 +264,7 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 16, background: "#242424", borderBottom: "1px solid #333" }}>
           <div style={{ fontWeight: 800, fontSize: 18 }}>Edit Anime</div>
-          <button onClick={onClose} style={{ background: "transparent", color: "#ccc", border: "none", fontSize: 20, cursor: "pointer" }}>×</button>
+          <button type="button" onClick={onClose} style={{ background: "transparent", color: "#ccc", border: "none", fontSize: 20, cursor: "pointer" }}>×</button>
         </div>
 
         <div style={{ 
@@ -265,18 +283,21 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
             }
           `}</style>
           <div style={{ gridColumn: "1 / -1", display: "flex", gap: 16, flexWrap: "wrap" }}>
-            <img src={anime.coverImage?.extraLarge || anime.coverImage} alt={anime.title?.english || anime.title?.romaji || anime.title} style={{ width: 90, height: 135, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
+            {imageSrc ? (
+              <img src={imageSrc} alt={displayTitle} style={{ width: 90, height: 135, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />
+            ) : null}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minWidth: 0 }}>
               <label style={{ fontSize: 12, color: "#aaa" }}>Name</label>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <input 
                   type="text" 
                   value={customName} 
                   onChange={(e) => setCustomName(e.target.value)}
-                  placeholder={anime.title?.english || anime.title?.romaji || anime.title}
+                  placeholder={displayTitle}
                   style={{ flex: 1, padding: 10, borderRadius: 6, border: "1px solid #333", background: "#2a2a2a", color: "#eee" }} 
                 />
                 <button 
+                  type="button"
                   onClick={() => {
                     if (onRename) {
                       onRename(anime.id, customName.trim() || "");
@@ -287,6 +308,7 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
                   Save
                 </button>
                 <button 
+                  type="button"
                   onClick={() => {
                     setCustomName("");
                     if (onRename) {
@@ -307,12 +329,11 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
                 </button>
               </div>
               <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
-                Original: {anime.title?.english || anime.title?.romaji || anime.title}
+                Original: {anime.title?.english || anime.title?.romaji || displayTitle}
               </div>
 
               <label style={{ fontSize: 12, color: "#aaa", marginTop: 8 }}>Streaming Link</label>
               
-              {/* Streaming Providers */}
               {sortedProviders.length > 0 && (
                 <div style={{ marginBottom: 8 }}>
                   <div style={{ fontSize: 11, color: "#888", marginBottom: 6 }}>Available Providers:</div>
@@ -322,11 +343,9 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
                       const siteName = provider.site || "Unknown";
                       return (
                         <button
+                          type="button"
                           key={provider.id || provider.url}
-                          onClick={() => {
-                            setSelectedProvider(provider.url);
-                            setManualLink(provider.url);
-                          }}
+                          onClick={() => handleProviderSelect(provider.url)}
                           style={{
                             background: isSelected ? "#61dafb" : "#444",
                             color: isSelected ? "#000" : "#eee",
@@ -352,20 +371,13 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
                 <input 
                   type="text" 
                   value={manualLink} 
-                  onChange={(e) => {
-                    setManualLink(e.target.value);
-                    setSelectedProvider(e.target.value);
-                  }}
+                  onChange={(e) => handleLinkInputChange(e.target.value)}
+                  onBlur={handleLinkInputBlur}
                   placeholder="Enter anime URL..."
                   style={{ flex: 1, padding: 10, borderRadius: 6, border: "1px solid #333", background: "#2a2a2a", color: "#eee" }} 
                 />
                 <button 
-                  onClick={handleLinkSave}
-                  style={{ background: "#61dafb", color: "#000", border: "none", borderRadius: 6, padding: "8px 10px", fontWeight: 800, cursor: "pointer" }}
-                >
-                  Save
-                </button>
-                <button 
+                  type="button"
                   onClick={handleLinkReset}
                   disabled={!anime.originalSiteUrl}
                   style={{ 
@@ -399,30 +411,27 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
                   Open link →
                 </a>
               )}
-              {/* {!anime.originalSiteUrl && (
-                <div style={{ fontSize: 12, color: "#aaa" }}>No modifications made</div>
-              )} */}
             </div>
           </div>
 
           <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 8 }}>
             <label style={{ fontSize: 12, color: "#aaa" }}>Release time</label>
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <input
-                type="datetime-local"
+              <ReleaseDateTimePicker
                 value={manualTime}
-                onChange={(e) => setManualTime(e.target.value)}
-                style={{ flex: 1, minWidth: 240, padding: 10, borderRadius: 6, border: "1px solid #333", background: "#2a2a2a", color: "#eee" }}
+                onChange={handleReleaseTimeChange}
               />
-              <button onClick={handleManualSave} style={{ background: "#61dafb", color: "#000", border: "none", borderRadius: 6, padding: "10px 12px", fontWeight: 800, cursor: "pointer" }}>Save</button>
-              <button onClick={() => onAdjustOffsetSeconds(anime.id, 60 * 60)} style={{ background: "#2e7d32", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>+1h</button>
-              <button onClick={() => onAdjustOffsetSeconds(anime.id, -60 * 60)} style={{ background: "#8b0000", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>-1h</button>
-              <button onClick={() => onAdjustOffsetSeconds(anime.id, 30 * 60)} style={{ background: "#2e7d32", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>+30m</button>
-              <button onClick={() => onAdjustOffsetSeconds(anime.id, -30 * 60)} style={{ background: "#8b0000", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>-30m</button>
-              <button onClick={() => onResetReleaseTime(anime.id)} style={{ background: "#444", color: "#eee", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer", marginLeft: "auto" }}>Reset</button>
+              <button type="button" onClick={() => onAdjustOffsetSeconds(anime.id, 60 * 60)} style={{ background: "#2e7d32", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>+1h</button>
+              <button type="button" onClick={() => onAdjustOffsetSeconds(anime.id, -60 * 60)} style={{ background: "#8b0000", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>-1h</button>
+              <button type="button" onClick={() => onAdjustOffsetSeconds(anime.id, 30 * 60)} style={{ background: "#2e7d32", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>+30m</button>
+              <button type="button" onClick={() => onAdjustOffsetSeconds(anime.id, -30 * 60)} style={{ background: "#8b0000", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}>-30m</button>
+              <button type="button" onClick={() => onResetReleaseTime(anime.id)} style={{ background: "#444", color: "#eee", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer", marginLeft: "auto" }}>Reset</button>
             </div>
-            {anime.userTimeOffsetSeconds ? (
-              <div style={{ fontSize: 12, color: "#aaa" }}>Offset applied: {Math.round(anime.userTimeOffsetSeconds / 60)} minutes</div>
+            {anime.userTimeOffsetSeconds != null && anime.userTimeOffsetSeconds !== 0 ? (
+              <div style={{ fontSize: 12, color: "#aaa" }}>
+                Offset applied: {anime.userTimeOffsetSeconds > 0 ? "+" : ""}
+                {Math.round(anime.userTimeOffsetSeconds / 60)} minutes
+              </div>
             ) : (
               <div style={{ fontSize: 12, color: "#aaa" }}>No offset applied</div>
             )}
@@ -430,18 +439,21 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
 
           <div style={{ gridColumn: "1 / -1", display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
             <button
+              type="button"
               onClick={() => onToggleFavorite(anime.id)}
               style={{ background: "#61dafb", color: "#000", border: "none", borderRadius: 6, padding: "10px 12px", fontWeight: 800, cursor: "pointer" }}
             >
               {anime.favorited ? "★ Unfavorite" : "☆ Favorite"}
             </button>
             <button
+              type="button"
               onClick={() => onToggleCalendar(anime)}
               style={{ background: isInCalendar ? "#2e7d32" : "#007acc", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}
             >
               {isInCalendar ? "Remove from Calendar" : "Add to Calendar"}
             </button>
             <button
+              type="button"
               onClick={() => onDelete(anime.id)}
               style={{ background: "#e55353", color: "#fff", border: "none", borderRadius: 6, padding: "10px 12px", cursor: "pointer" }}
             >
@@ -450,6 +462,7 @@ const isLinkModified = manualLink.trim() !== originalUrl.trim();
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

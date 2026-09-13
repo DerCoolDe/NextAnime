@@ -1,19 +1,18 @@
-import React, { useMemo, useRef, useEffect, useState } from "react";
+import React, { memo, useEffect, useRef, useState } from "react";
 import { LIST_STATUS_OPTIONS, DEFAULT_LIST_STATUS } from "../constants/listStatuses";
-import { useNow, formatCountdown } from "../hooks/useNow";
+import AiringCountdownText from "./AiringCountdownText";
+import { resolveNextAiringEpisode } from "../utils/airingDisplay";
 
-export default function SavedAnimeCard({
+function SavedAnimeCard({
   anime,
   onDelete,
   onToggleFavorite,
   onToggleCalendar,
-  calendarList,
+  isInCalendar,
   isCompleted,
   onClickEdit,
   onChangeStatus,
-  onRename,
 }) {
-  const currentTime = useNow();
   const clickTimerRef = useRef(null);
   const statusMenuRef = useRef(null);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
@@ -40,29 +39,10 @@ export default function SavedAnimeCard({
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [statusMenuOpen]);
 
-  const nextAiringTs = anime.nextAiringEpisode?.airingAt || null;
-  const nextAiringEp = anime.nextAiringEpisode?.episode || null;
-  const countdown = useMemo(() => {
-    if (isCompleted || !nextAiringTs) return "";
-    return formatCountdown(nextAiringTs, currentTime);
-  }, [nextAiringTs, currentTime, isCompleted]);
-
+  const resolvedNext = resolveNextAiringEpisode(anime);
+  const nextAiringTs = resolvedNext?.airingAt || null;
+  const nextAiringEp = resolvedNext?.episode ?? null;
   const isAiring = !isCompleted && !!nextAiringTs;
-
-  const airingText = useMemo(() => {
-    if (isCompleted) {
-      return "Completed";
-    }
-    if (isAiring) {
-      return `Ep ${nextAiringEp ?? "?"} - ${countdown || "Now airing"}`;
-    }
-    return "Finished airing";
-  }, [countdown, isAiring, isCompleted, nextAiringEp]);
-
-  const isInCalendar = useMemo(
-    () => calendarList.some((a) => a.id === anime.id),
-    [calendarList, anime.id]
-  );
 
   const currentStatus = anime.listStatus || DEFAULT_LIST_STATUS;
 
@@ -179,9 +159,11 @@ export default function SavedAnimeCard({
             {titleDisplay}
           </h4>
 
-          <p style={{ fontSize: "clamp(10px, 2vw, 12px)", color: "#ccc", marginTop: 4 }}>
-            {airingText}
-          </p>
+          <AiringCountdownText
+            airingAt={nextAiringTs}
+            episode={nextAiringEp}
+            isCompleted={isCompleted}
+          />
         </div>
 
         <div>
@@ -372,3 +354,28 @@ export default function SavedAnimeCard({
     </div>
   );
 }
+
+function propsAreEqual(prev, next) {
+  return (
+    prev.isCompleted === next.isCompleted &&
+    prev.isInCalendar === next.isInCalendar &&
+    prev.anime.id === next.anime.id &&
+    prev.anime.favorited === next.anime.favorited &&
+    (prev.anime.listStatus || DEFAULT_LIST_STATUS) ===
+      (next.anime.listStatus || DEFAULT_LIST_STATUS) &&
+    prev.anime.customTitle === next.anime.customTitle &&
+    prev.anime.siteUrl === next.anime.siteUrl &&
+    prev.anime.nextAiringEpisode?.airingAt === next.anime.nextAiringEpisode?.airingAt &&
+    prev.anime.nextAiringEpisode?.episode === next.anime.nextAiringEpisode?.episode &&
+    prev.anime.coverImage?.extraLarge === next.anime.coverImage?.extraLarge &&
+    prev.anime.title?.english === next.anime.title?.english &&
+    prev.anime.title?.romaji === next.anime.title?.romaji &&
+    prev.onDelete === next.onDelete &&
+    prev.onToggleFavorite === next.onToggleFavorite &&
+    prev.onToggleCalendar === next.onToggleCalendar &&
+    prev.onClickEdit === next.onClickEdit &&
+    prev.onChangeStatus === next.onChangeStatus
+  );
+}
+
+export default memo(SavedAnimeCard, propsAreEqual);

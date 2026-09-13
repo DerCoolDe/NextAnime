@@ -22,6 +22,7 @@ import {
   saveWatchingList,
   loadCalendarList,
   saveCalendarList,
+  mergeCalendarLists,
 } from "../utils/storage";
 
 import {
@@ -40,6 +41,9 @@ import {
   getCachedAnimeDetails,
   setCachedAnimeDetails,
 } from "../utils/cacheUtils";
+import { syncEpisodeWatchForUser } from "../hooks/useEpisodeWatch";
+import { resolveNextAiringEpisode } from "../utils/airingDisplay";
+import { getBestProviderUrlFromLinks } from "../utils/providerPriority";
 import {
   LIST_STATUS_OPTIONS,
   DEFAULT_LIST_STATUS,
@@ -108,66 +112,94 @@ async function saveFirestoreCalendarList(uid, list) {
   }
 }
 
-// Provider priority order: higher number = higher priority
-const PROVIDER_PRIORITY = {
-  "Crunchyroll": 5,
-  "Netflix": 4,
-  "Prime Video": 3,
-  "Disney+": 2,
-  "AniList": 1,
-};
+// Provider priority lives in utils/providerPriority.js (editable in Settings)
 
-// Get priority for a provider name (case-insensitive)
-function getProviderPriority(siteName) {
-  if (!siteName) return 0;
-  const normalized = siteName.toLowerCase();
-  for (const [key, priority] of Object.entries(PROVIDER_PRIORITY)) {
-    if (normalized.includes(key.toLowerCase())) {
-      return priority;
-    }
+/** Prefer newer release-time offset fields so offsets/resets sync across devices. */
+function mergeWatchingEntry(local, remote) {
+  if (!local) return remote;
+  if (!remote) return local;
+
+  const localUpdated = local.releaseTimeUpdatedAt || 0;
+  const remoteUpdated = remote.releaseTimeUpdatedAt || 0;
+  const preferRemote =
+    remoteUpdated > localUpdated ||
+    ((remote.userTimeOffsetSeconds || 0) !== 0 &&
+      (local.userTimeOffsetSeconds || 0) === 0 &&
+      remoteUpdated >= localUpdated);
+
+  if (!preferRemote) {
+    return { ...remote, ...local };
   }
-  return 0;
+
+  return {
+    ...remote,
+    ...local,
+    airingAt: remote.airingAt ?? local.airingAt,
+    episode: remote.episode ?? local.episode,
+    fullAiringSchedule: remote.fullAiringSchedule || local.fullAiringSchedule,
+    nextAiringEpisode: remote.nextAiringEpisode ?? local.nextAiringEpisode,
+    userTimeOffsetSeconds: remote.userTimeOffsetSeconds || 0,
+    originalAiringAt: remote.originalAiringAt ?? local.originalAiringAt ?? null,
+    originalFullAiringSchedule:
+      remote.originalFullAiringSchedule || local.originalFullAiringSchedule || [],
+    releaseTimeUpdatedAt: remote.releaseTimeUpdatedAt || local.releaseTimeUpdatedAt || 0,
+  };
 }
 
-// Get the best provider URL based on priority
-function getBestProviderUrlFromLinks(externalLinks, defaultSiteUrl) {
-  if (!externalLinks || externalLinks.length === 0) {
-    return defaultSiteUrl || "";
-  }
-  
-  // Find the highest priority provider from externalLinks
-  const sorted = [...externalLinks].sort((a, b) => {
-    const priorityA = getProviderPriority(a.site);
-    const priorityB = getProviderPriority(b.site);
-    return priorityB - priorityA; // Higher priority first
-  });
-  
-  // Return the highest priority provider
-  if (sorted[0]) {
-    return sorted[0].url;
-  }
-  
-  // Fallback to AniList siteUrl
-  return defaultSiteUrl || "";
-}
-
-// Merge two lists of anime, prefer local entries but add missing from Firestore
+// Merge local + Firestore watching lists; cloud wins on release-time offset fields
 function mergeLists(localList, firestoreList) {
   const map = new Map();
 
-  // Add all local entries first (preserves local edits)
-  for (const anime of localList) {
+  for (const anime of firestoreList || []) {
     map.set(anime.id, anime);
   }
 
-  // Add Firestore entries if not present locally
-  for (const anime of firestoreList) {
-    if (!map.has(anime.id)) {
-      map.set(anime.id, anime);
-    }
+  for (const anime of localList || []) {
+    const existing = map.get(anime.id);
+    map.set(anime.id, existing ? mergeWatchingEntry(anime, existing) : anime);
   }
 
   return Array.from(map.values());
+}
+
+/** Re-apply a stored user offset onto fresh AniList schedule times. */
+function withPreservedUserOffset(anime, freshSchedule, freshNext) {
+  const offset = anime.userTimeOffsetSeconds || 0;
+  const schedule = Array.isArray(freshSchedule) ? freshSchedule : (anime.fullAiringSchedule || []);
+  const baseAiringAt = freshNext?.airingAt ?? anime.airingAt ?? null;
+  const baseNext = freshNext ?? anime.nextAiringEpisode ?? null;
+
+  if (!offset) {
+    return {
+      fullAiringSchedule: schedule,
+      airingAt: baseAiringAt,
+      episode: baseNext?.episode ?? anime.episode,
+      nextAiringEpisode: baseNext,
+      userTimeOffsetSeconds: 0,
+      originalAiringAt: undefined,
+      originalFullAiringSchedule: undefined,
+    };
+  }
+
+  const shift = (ts) => (typeof ts === "number" ? ts + offset : ts);
+  const adjustedSchedule = schedule.map((n) => ({
+    ...n,
+    airingAt: shift(n.airingAt),
+  }));
+  const adjustedNext = baseNext
+    ? { ...baseNext, airingAt: shift(baseNext.airingAt) }
+    : null;
+
+  return {
+    fullAiringSchedule: adjustedSchedule,
+    airingAt: shift(baseAiringAt),
+    episode: adjustedNext?.episode ?? anime.episode,
+    nextAiringEpisode: adjustedNext,
+    userTimeOffsetSeconds: offset,
+    originalAiringAt: baseAiringAt,
+    originalFullAiringSchedule: schedule,
+    releaseTimeUpdatedAt: anime.releaseTimeUpdatedAt || 0,
+  };
 }
 
 
@@ -218,29 +250,18 @@ function ensureWatchingFromCalendar(watchingList, calendarList) {
   return [...(watchingList || []), ...additions];
 }
 function fixAiringTimes(watchingList) {
-  const now = Date.now() / 1000;
-
   return watchingList.map((anime) => {
-    // Skip updating airing times for completed anime
     if (anime.status === "FINISHED") {
       return anime;
     }
-
-    if (
-      anime.airingAt &&
-      anime.airingAt < now &&
-      anime.fullAiringSchedule?.length
-    ) {
-      const nextEp = anime.fullAiringSchedule.find((ep) => ep.airingAt > now);
-      if (nextEp) {
-        return {
-          ...anime,
-          airingAt: nextEp.airingAt,
-          episode: nextEp.episode,
-        };
-      }
-    }
-    return anime;
+    const next = resolveNextAiringEpisode(anime);
+    if (!next) return anime;
+    return {
+      ...anime,
+      airingAt: next.airingAt,
+      episode: next.episode,
+      nextAiringEpisode: next,
+    };
   });
 }
 
@@ -258,7 +279,7 @@ const styles = {
     maxWidth: "1400px",
     margin: "0 auto",
     padding: "clamp(10px, 3vw, 30px)",
-    paddingTop: "80px",
+    paddingTop: "80px", /* overridden by .main-page-responsive */
     minHeight: "100vh",
     display: "flex",
     flexDirection: "column",
@@ -271,8 +292,7 @@ const styles = {
     top: 0,
     left: 0,
     right: 0,
-    backgroundColor: "rgba(18, 18, 18, 0.95)",
-    backdropFilter: "blur(20px)",
+    backgroundColor: "rgba(18, 18, 18, 0.98)",
     borderBottom: "1px solid rgba(97, 218, 251, 0.2)",
     zIndex: 1000,
     padding: "10px 20px",
@@ -371,14 +391,19 @@ export default function MainPage() {
   const prevWatchingListIds = useRef(new Set());
   const prevWatchingList = useRef([]);
   const autoRefreshIntervalRef = useRef(null);
+  const calendarCloudSyncReadyRef = useRef(true);
 
   // Debounced functions for better performance
   const debouncedSaveWatchingList = useRef(null);
   const debouncedSaveCalendarList = useRef(null);
+  const debouncedSaveFirestoreCalendarList = useRef(null);
 
   useEffect(() => {
     debouncedSaveWatchingList.current = debounce(saveWatchingList, 300);
     debouncedSaveCalendarList.current = debounce(saveCalendarList, 300);
+    debouncedSaveFirestoreCalendarList.current = debounce((uid, list) => {
+      saveFirestoreCalendarList(uid, list);
+    }, 500);
   }, []);
 
   // Debounce utility
@@ -469,7 +494,6 @@ export default function MainPage() {
     return false;
   }, []);
 
-  // Memoized sorted watching list
   const sortedWatchingList = useMemo(() => {
     const now = Date.now() / 1000;
     const activeWatching = watchingList.filter((anime) => (anime.listStatus || DEFAULT_LIST_STATUS) === DEFAULT_LIST_STATUS);
@@ -502,11 +526,32 @@ export default function MainPage() {
     });
   }, [watchingList, isAnimeCompleted]);
 
+  const calendarIdSet = useMemo(
+    () => new Set(calendarList.map((ep) => ep.id)),
+    [calendarList]
+  );
+
+  const watchingIdSet = useMemo(
+    () => new Set(watchingList.map((a) => a.id)),
+    [watchingList.map((a) => a.id).join(",")]
+  );
+
+  const watchingCalendarSyncKey = useMemo(
+    () =>
+      watchingList
+        .map((a) =>
+          `${a.id}:${a.favorited ? 1 : 0}:${a.siteUrl || ""}:${JSON.stringify(a.externalLinks || [])}`
+        )
+        .join("|"),
+    [watchingList]
+  );
+
   // Auth listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setUser(firebaseUser);
       if (firebaseUser) {
+        calendarCloudSyncReadyRef.current = false;
+        setUser(firebaseUser);
         // Load username from Firestore, then sync lists
         try {
           const userDocRef = doc(db, "users", firebaseUser.uid);
@@ -524,6 +569,11 @@ export default function MainPage() {
         // On login, sync Firestore + localStorage lists
         await syncWatchingList(firebaseUser.uid);
         await syncCalendarList(firebaseUser.uid);
+        await syncEpisodeWatchForUser(firebaseUser.uid);
+        calendarCloudSyncReadyRef.current = true;
+        if (debouncedSaveFirestoreCalendarList.current) {
+          debouncedSaveFirestoreCalendarList.current(firebaseUser.uid, loadCalendarList());
+        }
 
         // Kick off an auto-refresh (rate-limited) and keep it running every 3 hours.
         // Clear any previous interval first.
@@ -536,6 +586,8 @@ export default function MainPage() {
           autoRefreshAnimeData(false);
         }, AUTO_REFRESH_INTERVAL_MS);
       } else {
+        calendarCloudSyncReadyRef.current = true;
+        setUser(null);
         // Logged out: clear username and load localStorage only
         setUsername(null);
         if (autoRefreshIntervalRef.current) {
@@ -587,26 +639,7 @@ export default function MainPage() {
     try {
       const firestoreList = await loadFirestoreCalendarList(uid);
       const localList = loadCalendarList() || [];
-      
-      // Merge calendar lists - prefer entries with more recent data
-      // Use a map to avoid duplicates by anime id + episode
-      const calendarMap = new Map();
-      
-      // Add local entries first (preserves local edits)
-      localList.forEach((ep) => {
-        const key = `${ep.id}-${ep.episode}`;
-        calendarMap.set(key, ep);
-      });
-      
-      // Add Firestore entries if not present locally
-      firestoreList.forEach((ep) => {
-        const key = `${ep.id}-${ep.episode}`;
-        if (!calendarMap.has(key)) {
-          calendarMap.set(key, ep);
-        }
-      });
-      
-      const merged = Array.from(calendarMap.values());
+      const merged = mergeCalendarLists(localList, firestoreList);
       setCalendarList(merged);
 
       // Make sure every calendar anime has a corresponding watching-list entry
@@ -695,6 +728,12 @@ export default function MainPage() {
             ? anime.externalLinks
             : (freshData.externalLinks || []);
 
+        const offsetFields = withPreservedUserOffset(
+          anime,
+          freshData.airingSchedule?.nodes || anime.fullAiringSchedule,
+          freshData.nextAiringEpisode ?? null
+        );
+
         return normalizeAnimeEntry({
           ...anime,
           title: freshData.title || anime.title,
@@ -704,10 +743,7 @@ export default function MainPage() {
           siteUrl: preservedSiteUrl,
           genres: freshData.genres || anime.genres,
           externalLinks: preservedExternalLinks,
-          fullAiringSchedule: freshData.airingSchedule?.nodes || anime.fullAiringSchedule,
-          nextAiringEpisode: freshData.nextAiringEpisode ?? null,
-          airingAt: freshData.nextAiringEpisode?.airingAt ?? anime.airingAt,
-          episode: freshData.nextAiringEpisode?.episode ?? anime.episode,
+          ...offsetFields,
         });
       });
 
@@ -867,42 +903,51 @@ export default function MainPage() {
     };
   }, [watchingList.map(a => a.id).join(','), user]); // More stable dependency
 
-  // Optimized calendar list save effect
+  // Optimized calendar list save effect (skip until login merge completes)
   useEffect(() => {
+    if (!calendarCloudSyncReadyRef.current) return;
     if (debouncedSaveCalendarList.current) {
       debouncedSaveCalendarList.current(calendarList);
     }
-    if (user) {
-      debounce(() => saveFirestoreCalendarList(user.uid, calendarList), 500)();
+    if (user && debouncedSaveFirestoreCalendarList.current) {
+      debouncedSaveFirestoreCalendarList.current(user.uid, calendarList);
     }
   }, [calendarList, user]);
 
-  // Sync calendar list with current favorite status, siteUrl, and externalLinks from watching list
+  // Sync calendar metadata from watching list (favorites / links only)
   useEffect(() => {
-    if (watchingList.length > 0) {
-      setCalendarList((prev) => {
-        const updatedCalendar = prev.map((ep) => {
-          const anime = watchingList.find(a => a.id === ep.id);
-          if (anime) {
-            return {
-              ...ep,
-              favorited: anime.favorited || false,
-              siteUrl: anime.siteUrl || ep.siteUrl,
-              externalLinks: anime.externalLinks || ep.externalLinks || [],
-            };
-          }
+    if (!watchingCalendarSyncKey) return;
+
+    setCalendarList((prev) => {
+      let changed = false;
+      const updatedCalendar = prev.map((ep) => {
+        const anime = watchingList.find((a) => a.id === ep.id);
+        if (!anime) return ep;
+
+        const favorited = anime.favorited || false;
+        const siteUrl = anime.siteUrl || ep.siteUrl;
+        const externalLinks = anime.externalLinks || ep.externalLinks || [];
+
+        if (
+          ep.favorited === favorited &&
+          ep.siteUrl === siteUrl &&
+          JSON.stringify(ep.externalLinks || []) === JSON.stringify(externalLinks)
+        ) {
           return ep;
-        });
-        if (debouncedSaveCalendarList.current) {
-          debouncedSaveCalendarList.current(updatedCalendar);
         }
-        if (user) {
-          debounce(() => saveFirestoreCalendarList(user.uid, updatedCalendar), 500)();
-        }
-        return updatedCalendar;
+
+        changed = true;
+        return {
+          ...ep,
+          favorited,
+          siteUrl,
+          externalLinks,
+        };
       });
-    }
-  }, [watchingList, user]);
+
+      return changed ? updatedCalendar : prev;
+    });
+  }, [watchingCalendarSyncKey, watchingList]);
 
   // Track watching list changes for optimization
   useEffect(() => {
@@ -1134,7 +1179,7 @@ export default function MainPage() {
     }
   }, [watchingList, user, calendarList]);
 
-  // Open/close edit modal
+  // Open/close edit modal — keep modal data live from watchingList so offsets update immediately
   const handleOpenEdit = useCallback((anime) => {
     setEditTarget(anime);
   }, []);
@@ -1143,17 +1188,36 @@ export default function MainPage() {
     setEditTarget(null);
   }, []);
 
+  const editAnime = useMemo(() => {
+    if (!editTarget) return null;
+    return watchingList.find((a) => a.id === editTarget.id) || editTarget;
+  }, [editTarget, watchingList]);
+
   
 
-  const withAdjustedSchedule = useCallback((anime, newFirstTs) => {
-    // Compute delta between desired first upcoming ts and current first upcoming ts
+  /** Shared reference for release-time edits: next future schedule episode, else airingAt. */
+  const getReleaseReferenceTs = useCallback((anime) => {
+    if (!anime) return Math.floor(Date.now() / 1000);
     const now = Date.now() / 1000;
-    let nextNode = null;
     if (anime.fullAiringSchedule?.length) {
-      nextNode = anime.fullAiringSchedule.find((n) => n.airingAt > now) || anime.fullAiringSchedule[0];
+      const nextNode =
+        anime.fullAiringSchedule.find((n) => typeof n.airingAt === "number" && n.airingAt > now) ||
+        null;
+      if (nextNode?.airingAt) return nextNode.airingAt;
     }
-    const currentRefTs = nextNode ? nextNode.airingAt : anime.airingAt || newFirstTs;
+    if (typeof anime.airingAt === "number") return anime.airingAt;
+    if (typeof anime.nextAiringEpisode?.airingAt === "number") {
+      return anime.nextAiringEpisode.airingAt;
+    }
+    return Math.floor(Date.now() / 1000);
+  }, []);
+
+  const withAdjustedSchedule = useCallback((anime, newFirstTs) => {
+    const currentRefTs = getReleaseReferenceTs(anime);
     const delta = newFirstTs - currentRefTs;
+    if (!Number.isFinite(delta) || delta === 0) {
+      return anime;
+    }
 
     const shift = (ts) => (typeof ts === "number" ? ts + delta : ts);
 
@@ -1163,16 +1227,21 @@ export default function MainPage() {
     }));
 
     const adjustedAiringAt = shift(anime.airingAt);
+    const adjustedNext = anime.nextAiringEpisode
+      ? { ...anime.nextAiringEpisode, airingAt: shift(anime.nextAiringEpisode.airingAt) }
+      : anime.nextAiringEpisode;
 
     return {
       ...anime,
-      airingAt: adjustedAiringAt,
+      airingAt: adjustedAiringAt ?? newFirstTs,
       fullAiringSchedule: adjustedSchedule,
+      nextAiringEpisode: adjustedNext,
       userTimeOffsetSeconds: (anime.userTimeOffsetSeconds || 0) + delta,
       originalAiringAt: anime.originalAiringAt ?? (anime.airingAt ?? null),
       originalFullAiringSchedule: anime.originalFullAiringSchedule ?? (anime.fullAiringSchedule || []),
+      releaseTimeUpdatedAt: Date.now(),
     };
-  }, []);
+  }, [getReleaseReferenceTs]);
 
   const handleSaveReleaseTimestamp = useCallback((id, newTsSeconds) => {
     const updated = watchingList.map((a) => (a.id === id ? withAdjustedSchedule(a, newTsSeconds) : a));
@@ -1181,21 +1250,34 @@ export default function MainPage() {
 
   const handleAdjustOffsetSeconds = useCallback((id, offsetSeconds) => {
     const target = watchingList.find((a) => a.id === id);
-    if (!target) return;
-    const newTs = (target.airingAt || Math.floor(Date.now() / 1000)) + offsetSeconds;
+    if (!target || !offsetSeconds) return;
+    // Must use the same reference as withAdjustedSchedule, or delta drifts wildly
+    const newTs = getReleaseReferenceTs(target) + offsetSeconds;
     handleSaveReleaseTimestamp(id, newTs);
-  }, [watchingList, handleSaveReleaseTimestamp]);
+  }, [watchingList, getReleaseReferenceTs, handleSaveReleaseTimestamp]);
 
   const handleResetReleaseTime = useCallback((id) => {
     const updated = watchingList.map((a) => {
       if (a.id !== id) return a;
       const baseSchedule = a.originalFullAiringSchedule || a.fullAiringSchedule || [];
       const baseAiring = a.originalAiringAt ?? a.airingAt;
+      const baseNext = a.nextAiringEpisode
+        ? {
+            ...a.nextAiringEpisode,
+            airingAt:
+              baseSchedule.find((n) => n.episode === a.nextAiringEpisode.episode)?.airingAt ??
+              baseAiring,
+          }
+        : a.nextAiringEpisode;
       return {
         ...a,
         fullAiringSchedule: baseSchedule,
         airingAt: baseAiring,
+        nextAiringEpisode: baseNext,
         userTimeOffsetSeconds: 0,
+        originalAiringAt: null,
+        originalFullAiringSchedule: null,
+        releaseTimeUpdatedAt: Date.now(),
       };
     });
     applyUpdateAndPersist(updated);
@@ -1256,6 +1338,12 @@ export default function MainPage() {
           ? anime.externalLinks 
           : (freshData.externalLinks || []);
         
+        const offsetFields = withPreservedUserOffset(
+          anime,
+          freshData.airingSchedule?.nodes || anime.fullAiringSchedule,
+          freshData.nextAiringEpisode ?? null
+        );
+
         return {
           ...anime,
           // Update with fresh data
@@ -1268,12 +1356,7 @@ export default function MainPage() {
           genres: freshData.genres || anime.genres,
           // Preserve existing externalLinks if they exist, otherwise use fresh data
           externalLinks: preservedExternalLinks,
-          fullAiringSchedule: freshData.airingSchedule?.nodes || anime.fullAiringSchedule,
-          // Use fresh nextAiringEpisode even if null (for completed shows)
-          nextAiringEpisode: freshData.nextAiringEpisode ?? null,
-          // Update airingAt and episode if nextAiringEpisode exists
-          airingAt: freshData.nextAiringEpisode?.airingAt ?? anime.airingAt,
-          episode: freshData.nextAiringEpisode?.episode ?? anime.episode,
+          ...offsetFields,
         };
       });
       
@@ -1321,6 +1404,7 @@ export default function MainPage() {
   const navigationHandlers = useMemo(() => ({
     toAnimeList: () => navigate("/animelist"),
     toCalendar: () => navigate("/calendar"),
+    toSettings: () => navigate("/settings"),
     toUser: () => navigate("/user"),
     toLogin: () => navigate("/login")
   }), [navigate]);
@@ -1329,6 +1413,33 @@ export default function MainPage() {
     <div style={styles.container}>
       {/* Custom CSS for responsive design */}
       <style>{`
+        .fixed-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          width: 100%;
+        }
+        .header-nav {
+          display: flex;
+          align-items: center;
+          gap: 15px;
+          flex-wrap: nowrap;
+          width: 100%;
+        }
+        .header-nav-main {
+          display: flex;
+          align-items: center;
+          gap: 15px;
+          flex-wrap: wrap;
+          min-width: 0;
+        }
+        .header-settings-btn {
+          margin-left: auto;
+          flex: 0 0 auto;
+        }
+        .main-page-responsive {
+          padding-top: 80px;
+        }
         @media (max-width: 768px) {
           .anime-scroll-container {
             scroll-snap-type: x mandatory;
@@ -1337,16 +1448,37 @@ export default function MainPage() {
             scroll-snap-align: start;
           }
           .fixed-header {
-            flex-direction: column !important;
-            align-items: flex-start !important;
-            gap: 10px !important;
+            justify-content: space-between !important;
+            padding: 8px 12px !important;
           }
-          .fixed-header > div:first-child {
+          .header-nav {
             width: 100%;
+            justify-content: space-between;
+            gap: 8px;
+            flex-wrap: nowrap;
           }
-          .fixed-header > div:last-child {
-            width: 100%;
-            justify-content: flex-start;
+          .header-nav-main {
+            flex: 1 1 auto;
+            gap: 8px;
+            flex-wrap: nowrap;
+            min-width: 0;
+          }
+          .header-nav-main button {
+            flex: 1 1 0;
+            min-width: 0;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+          .header-nav button.header-settings-btn {
+            flex: 0 0 auto;
+            margin-left: 8px;
+            min-width: 40px;
+            padding: 8px 10px !important;
+          }
+          .main-page-responsive {
+            padding-top: 56px !important;
           }
         }
         
@@ -1355,9 +1487,26 @@ export default function MainPage() {
             gap: 8px !important;
             padding: 8px !important;
           }
-          .fixed-header button {
+          .fixed-header {
+            padding: 6px 8px !important;
+          }
+          .header-nav {
+            gap: 6px;
+          }
+          .header-nav-main {
+            gap: 6px;
+          }
+          .header-nav-main button {
             font-size: 12px !important;
-            padding: 6px 10px !important;
+            padding: 8px 6px !important;
+          }
+          .header-nav button.header-settings-btn {
+            font-size: 14px !important;
+            padding: 8px 8px !important;
+            min-width: 36px;
+          }
+          .main-page-responsive {
+            padding-top: 50px !important;
           }
         }
 
@@ -1401,77 +1550,65 @@ export default function MainPage() {
         .anime-scroll-container::-webkit-scrollbar-thumb:hover {
           background: linear-gradient(90deg, #6dd6ff, #61dafb);
         }
-
-        /* Performance optimizations */
-        * {
-          will-change: auto;
-        }
-        
-        .anime-scroll-container {
-          transform: translateZ(0);
-          -webkit-transform: translateZ(0);
-        }
       `}</style>
 
       {/* Responsive Container */}
-      <div style={styles.responsiveContainer}>
+      <div style={styles.responsiveContainer} className="main-page-responsive">
         {/* Navigation Header */}
-        <div style={styles.fixedHeader}>
-          <div style={{ display: "flex", gap: "15px", alignItems: "center", flexWrap: "wrap" }}>
-            <button
-              onClick={handleResetAnimeData}
-              title="Refresh all anime data (check for new episodes, delays, completion status)"
-              style={{
-                ...styles.buttonBase,
-                backgroundColor: "rgba(97, 218, 251, 0.15)",
-                border: "1px solid rgba(97, 218, 251, 0.4)",
-                fontSize: "clamp(14px, 2vw, 16px)",
-                padding: "clamp(6px, 1.5vw, 8px) clamp(10px, 2vw, 12px)",
-              }}
-              {...createButtonHoverHandlers("rgba(97, 218, 251, 0.25)")}
-            >
-              🔄 Reset
-            </button>
-          </div>
-
-          <div style={{ display: "flex", gap: "15px", alignItems: "center", flexWrap: "wrap" }}>
-            <button
-              onClick={navigationHandlers.toAnimeList}
-              title="View Anime List"
-              style={{ ...styles.buttonBase, marginLeft: "clamp(0px, 2vw, 50px)" }}
-              {...createButtonHoverHandlers()}
-            >
-              📘 List
-            </button>
-            <button
-              onClick={navigationHandlers.toCalendar}
-              title="View Calendar"
-              style={styles.buttonBase}
-              {...createButtonHoverHandlers()}
-            >
-              📅 Calendar
-            </button>
-            {/* User Login Button */}
-            {user ? (
+        <div style={styles.fixedHeader} className="fixed-header">
+          <nav className="header-nav" aria-label="Main navigation">
+            <div className="header-nav-main">
               <button
-                onClick={navigationHandlers.toUser}
-                title={`Logged in as ${username || user.email}`}
-                style={{ ...styles.buttonBase, fontWeight: "bold" }}
-                {...createButtonHoverHandlers()}
-              >
-                👤 {username || "User"}
-              </button>
-            ) : (
-              <button
-                onClick={navigationHandlers.toLogin}
-                title="Login or Signup"
+                onClick={navigationHandlers.toAnimeList}
+                title="View Anime List"
                 style={styles.buttonBase}
                 {...createButtonHoverHandlers()}
               >
-                🔐 Login
+                📘 List
               </button>
-            )}
-          </div>
+              <button
+                onClick={navigationHandlers.toCalendar}
+                title="View Calendar"
+                style={styles.buttonBase}
+                {...createButtonHoverHandlers()}
+              >
+                📅 Calendar
+              </button>
+              {user ? (
+                <button
+                  onClick={navigationHandlers.toUser}
+                  title={`Logged in as ${username || user.email}`}
+                  style={{ ...styles.buttonBase, fontWeight: "bold" }}
+                  {...createButtonHoverHandlers()}
+                >
+                  👤 {username || "User"}
+                </button>
+              ) : (
+                <button
+                  onClick={navigationHandlers.toLogin}
+                  title="Login or Signup"
+                  style={styles.buttonBase}
+                  {...createButtonHoverHandlers()}
+                >
+                  🔐 Login
+                </button>
+              )}
+            </div>
+            <button
+              onClick={navigationHandlers.toSettings}
+              title="Settings"
+              aria-label="Settings"
+              className="header-settings-btn"
+              style={{
+                ...styles.buttonBase,
+                padding: "8px 10px",
+                minWidth: 40,
+              }}
+              {...createButtonHoverHandlers()}
+            >
+              ⚙
+            </button>
+          </nav>
         </div>
 
         {/* Duplicate Popup */}
@@ -1541,20 +1678,19 @@ export default function MainPage() {
               watchingList={sortedWatchingList}
               onDelete={deleteAnime}
               onToggleFavorite={toggleFavorite}
-              calendarList={calendarList}
+              calendarIdSet={calendarIdSet}
               onToggleCalendar={handleToggleCalendar}
               isCompleted={isAnimeCompleted}
               onClickEdit={handleOpenEdit}
               onChangeStatus={handleChangeListStatus}
-            onRename={handleRenameTitle}
             />
           </div>
 
           {/* Upcoming Anime Section */}
           <div>
-            <UpcomingAnimeVertical 
-              episodes={episodes} 
-              watchingList={watchingList}
+            <UpcomingAnimeVertical
+              episodes={episodes}
+              watchingIdSet={watchingIdSet}
               onAddAnime={addAnimeFromUpcoming}
             />
           </div>
@@ -1564,8 +1700,8 @@ export default function MainPage() {
 
         {/* Edit Modal */}
         <AnimeEditModal
-          anime={editTarget}
-          isOpen={!!editTarget}
+          anime={editAnime}
+          isOpen={!!editAnime}
           onClose={handleCloseEdit}
           onSaveReleaseTimestamp={handleSaveReleaseTimestamp}
           onAdjustOffsetSeconds={handleAdjustOffsetSeconds}
@@ -1573,7 +1709,7 @@ export default function MainPage() {
           onToggleFavorite={toggleFavorite}
           onDelete={deleteAnime}
           onToggleCalendar={handleToggleCalendar}
-          isInCalendar={editTarget ? calendarList.some((a) => a.id === editTarget.id) : false}
+          isInCalendar={editAnime ? calendarList.some((a) => a.id === editAnime.id) : false}
           setAnimeList={(updater) => {
             setWatchingList(prevList => {
               const updated = typeof updater === 'function' ? updater(prevList) : updater;

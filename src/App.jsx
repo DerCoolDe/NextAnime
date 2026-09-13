@@ -7,6 +7,7 @@ import CacheViewer from "./pages/CacheViewer";
 import AnimeList from "./pages/AnimeList"
 import Login from "./pages/Login"
 import User from "./pages/User"
+import Settings from "./pages/Settings"
 
 function App() {
   useEffect(() => {
@@ -27,6 +28,7 @@ function App() {
         <Route path="/animelist" element={<AnimeList />} />
         <Route path="/login" element={<Login />} />
         <Route path="/user" element={<User />} />
+        <Route path="/settings" element={<Settings />} />
       </Routes>
     </Router>
   );

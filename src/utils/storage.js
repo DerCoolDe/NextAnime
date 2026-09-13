@@ -27,3 +27,28 @@ export function loadCalendarList() {
 export function saveCalendarList(list) {
   localStorage.setItem("calendarList", JSON.stringify(list));
 }
+
+/** Stable key for a calendar episode row (anime id + episode number). */
+export function calendarEpisodeKey(ep) {
+  if (!ep?.id) return null;
+  return `${ep.id}-${ep.episode ?? "?"}`;
+}
+
+/** Union local and Firestore calendar rows by anime id + episode (local wins on conflict). */
+export function mergeCalendarLists(localList, firestoreList) {
+  const calendarMap = new Map();
+
+  (localList || []).forEach((ep) => {
+    const key = calendarEpisodeKey(ep);
+    if (key) calendarMap.set(key, ep);
+  });
+
+  (firestoreList || []).forEach((ep) => {
+    const key = calendarEpisodeKey(ep);
+    if (key && !calendarMap.has(key)) {
+      calendarMap.set(key, ep);
+    }
+  });
+
+  return Array.from(calendarMap.values());
+}

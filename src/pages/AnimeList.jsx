@@ -4,11 +4,26 @@ import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 import { app } from "../firebase";
 import CustomDropdown from "../components/CustomDropdown";
-import { loadWatchingList, saveWatchingList, loadCalendarList, saveCalendarList } from "../utils/storage";
+import { loadWatchingList, saveWatchingList, loadCalendarList, saveCalendarList, mergeCalendarLists } from "../utils/storage";
 import { LIST_STATUS_OPTIONS, DEFAULT_LIST_STATUS } from "../constants/listStatuses";
 
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// Helper: load calendar list from Firestore for given uid
+async function loadFirestoreCalendarList(uid) {
+  if (!uid) return [];
+  try {
+    const docRef = doc(db, "users", uid);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+      return docSnap.data().firebasecalendarlist || [];
+    }
+  } catch (e) {
+    console.error("Error loading Firestore calendar list:", e);
+  }
+  return [];
+}
 
 // Helper: save watching list to Firestore for given uid
 async function saveFirestoreWatchingList(uid, list) {
@@ -106,10 +121,21 @@ export default function AnimeList() {
     debouncedSaveCalendarList.current = debounce(saveCalendarList, 300);
   }, []);
 
-  // Auth listener
+  // Auth listener — merge cloud calendar so "In calendar" matches other devices
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
+      if (!firebaseUser) return;
+      try {
+        const firestoreList = await loadFirestoreCalendarList(firebaseUser.uid);
+        const localList = loadCalendarList() || [];
+        const merged = mergeCalendarLists(localList, firestoreList);
+        setCalendarList(merged);
+        saveCalendarList(merged);
+        await saveFirestoreCalendarList(firebaseUser.uid, merged);
+      } catch (e) {
+        console.error("Error syncing calendar list:", e);
+      }
     });
     return unsubscribe;
   }, []);

@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 import { app } from "../firebase";
-import { loadCalendarList, saveCalendarList } from "../utils/storage";
+import { loadCalendarList, saveCalendarList, mergeCalendarLists } from "../utils/storage";
 import WeekNavigation from "../components/WeekNavigation";
 import WeekView from "../components/WeekView";
 import UnwatchedList from "../components/UnwatchedList";
+import EpisodeWatchPopover from "../components/EpisodeWatchPopover";
+import { useEpisodeWatch } from "../hooks/useEpisodeWatch";
 
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -80,6 +82,8 @@ function formatWeekRange(startDate) {
 export default function Calendar() {
   const navigate = useNavigate();
   const calendarRef = useRef(null);
+  const calendarCloudSyncReadyRef = useRef(true);
+  const debouncedSaveFirestoreCalendarList = useRef(null);
   const [calendarList, setCalendarList] = useState(() => loadCalendarList());
   const [user, setUser] = useState(null);
   const [startDate, setStartDate] = useState(() => {
@@ -94,53 +98,41 @@ export default function Calendar() {
   });
 
   const [showUnwatched, setShowUnwatched] = useState(false);
-  const [watchedState, setWatchedState] = useState({});
-  
+  const [episodePanelAnime, setEpisodePanelAnime] = useState(null);
+  const { watchProgress, syncFromCloud, toggleEpisode, markEpisode } = useEpisodeWatch(user);
+
   // Debounced save function for Firebase
   const debouncedSaveCalendarList = useRef(null);
 
   useEffect(() => {
     debouncedSaveCalendarList.current = debounce(saveCalendarList, 300);
+    debouncedSaveFirestoreCalendarList.current = debounce((uid, list) => {
+      saveFirestoreCalendarList(uid, list);
+    }, 500);
   }, []);
 
   // Auth listener to sync calendar list from Firebase
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setUser(firebaseUser);
       if (firebaseUser) {
-        // Sync calendar list from Firestore
+        calendarCloudSyncReadyRef.current = false;
+        setUser(firebaseUser);
         try {
           const firestoreList = await loadFirestoreCalendarList(firebaseUser.uid);
           const localList = loadCalendarList() || [];
-          
-          // Merge calendar lists - prefer entries with more recent data
-          const calendarMap = new Map();
-          
-          // Add local entries first (preserves local edits)
-          localList.forEach((ep) => {
-            const key = `${ep.id}-${ep.episode}`;
-            calendarMap.set(key, ep);
-          });
-          
-          // Add Firestore entries if not present locally
-          firestoreList.forEach((ep) => {
-            const key = `${ep.id}-${ep.episode}`;
-            if (!calendarMap.has(key)) {
-              calendarMap.set(key, ep);
-            }
-          });
-          
-          const merged = Array.from(calendarMap.values());
+          const merged = mergeCalendarLists(localList, firestoreList);
           setCalendarList(merged);
-          
-          // Save merged back to Firestore and localStorage so both sides are synced
+
           saveCalendarList(merged);
           await saveFirestoreCalendarList(firebaseUser.uid, merged);
+          calendarCloudSyncReadyRef.current = true;
         } catch (e) {
           console.error("Error syncing calendar list:", e);
+          calendarCloudSyncReadyRef.current = true;
         }
       } else {
-        // Logged out: load localStorage only
+        calendarCloudSyncReadyRef.current = true;
+        setUser(null);
         const localList = loadCalendarList() || [];
         setCalendarList(localList);
       }
@@ -148,23 +140,19 @@ export default function Calendar() {
     return unsubscribe;
   }, []);
 
-  // Refresh watchedState from localStorage when opening the drawer
   useEffect(() => {
-    if (!showUnwatched) return;
-    try {
-      const saved = localStorage.getItem("watchedAnime");
-      setWatchedState(saved ? JSON.parse(saved) : {});
-    } catch {
-      setWatchedState({});
+    if (showUnwatched) {
+      syncFromCloud();
     }
-  }, [showUnwatched]);
+  }, [showUnwatched, syncFromCloud]);
 
   useEffect(() => {
+    if (!calendarCloudSyncReadyRef.current) return;
     if (debouncedSaveCalendarList.current) {
       debouncedSaveCalendarList.current(calendarList);
     }
-    if (user) {
-      debounce(() => saveFirestoreCalendarList(user.uid, calendarList), 500)();
+    if (user && debouncedSaveFirestoreCalendarList.current) {
+      debouncedSaveFirestoreCalendarList.current(user.uid, calendarList);
     }
   }, [calendarList, user]);
 
@@ -477,7 +465,11 @@ export default function Calendar() {
               </button>
             </div>
 
-            <UnwatchedList calendarList={calendarList} watchedState={watchedState} />
+            <UnwatchedList
+              calendarList={calendarList}
+              watchProgress={watchProgress}
+              onMarkEpisode={markEpisode}
+            />
           </div>
         </div>
       )}
@@ -513,8 +505,21 @@ export default function Calendar() {
           animeByDate={animeByDate}
           onRemove={handleRemoveFromCalendar}
           isCurrentWeek={isCurrentWeek}
+          watchProgress={watchProgress}
+          onToggleEpisodeWatch={toggleEpisode}
+          onOpenEpisodePanel={setEpisodePanelAnime}
         />
       </div>
+
+      {episodePanelAnime && (
+        <EpisodeWatchPopover
+          anime={episodePanelAnime}
+          calendarList={calendarList}
+          watchProgress={watchProgress}
+          onToggleEpisode={toggleEpisode}
+          onClose={() => setEpisodePanelAnime(null)}
+        />
+      )}
 
       {/* Delete button fade animation styles */}
       <style>{`

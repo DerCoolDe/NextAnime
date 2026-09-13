@@ -1,46 +1,34 @@
-import React from "react";
+import React, { memo, useMemo } from "react";
 import SavedAnimeCard from "./SavedAnimeCard";
+import { resolveNextAiringEpisode } from "../utils/airingDisplay";
 
-export default function SavedAnimeHorizontal({
+function SavedAnimeHorizontal({
   watchingList,
   onDelete,
   onToggleFavorite,
-  calendarList,
+  calendarIdSet,
   onToggleCalendar,
   isCompleted,
   onClickEdit,
   onChangeStatus,
-  onRename,
 }) {
-  if (watchingList.length === 0) return null;
-
-  const now = Date.now() / 1000;
-
-  // One-time fix: Replace outdated airingAt/episode with next upcoming
-  const adjustedList = watchingList.map((anime) => {
-    // Skip adjustment for completed anime
-    if (anime.status === "FINISHED") {
-      return anime;
-    }
-
-    if (
-      anime.airingAt &&
-      anime.airingAt < now &&
-      anime.airingSchedule?.nodes
-    ) {
-      const nextEp = anime.airingSchedule.nodes.find(
-        (ep) => ep.airingAt > now
-      );
-      if (nextEp) {
-        return {
-          ...anime,
-          airingAt: nextEp.airingAt,
-          episode: nextEp.episode,
-        };
+  const adjustedList = useMemo(() => {
+    return watchingList.map((anime) => {
+      if (anime.status === "FINISHED") {
+        return anime;
       }
-    }
-    return anime;
-  });
+      const next = resolveNextAiringEpisode(anime);
+      if (!next) return anime;
+      return {
+        ...anime,
+        airingAt: next.airingAt,
+        episode: next.episode,
+        nextAiringEpisode: next,
+      };
+    });
+  }, [watchingList]);
+
+  if (adjustedList.length === 0) return null;
 
   return (
     <div
@@ -55,6 +43,7 @@ export default function SavedAnimeHorizontal({
         scrollbarWidth: "thin",
         scrollbarColor: "#61dafb transparent",
         WebkitOverflowScrolling: "touch",
+        contain: "layout style paint",
       }}
     >
       {adjustedList.map((anime) => (
@@ -64,13 +53,27 @@ export default function SavedAnimeHorizontal({
           onDelete={onDelete}
           onToggleFavorite={onToggleFavorite}
           onToggleCalendar={onToggleCalendar}
-          calendarList={calendarList}
+          isInCalendar={calendarIdSet.has(anime.id)}
           isCompleted={isCompleted(anime)}
           onClickEdit={onClickEdit}
           onChangeStatus={onChangeStatus}
-          onRename={onRename}
         />
       ))}
     </div>
   );
 }
+
+const MemoSavedAnimeHorizontal = memo(SavedAnimeHorizontal, (prev, next) => {
+  if (prev.watchingList !== next.watchingList) return false;
+  if (prev.calendarIdSet !== next.calendarIdSet) return false;
+  if (prev.isCompleted !== next.isCompleted) return false;
+  return (
+    prev.onDelete === next.onDelete &&
+    prev.onToggleFavorite === next.onToggleFavorite &&
+    prev.onToggleCalendar === next.onToggleCalendar &&
+    prev.onClickEdit === next.onClickEdit &&
+    prev.onChangeStatus === next.onChangeStatus
+  );
+});
+
+export default MemoSavedAnimeHorizontal;
