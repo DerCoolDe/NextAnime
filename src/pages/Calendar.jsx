@@ -3,12 +3,19 @@ import { useNavigate } from "react-router-dom";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
 import { app } from "../firebase";
-import { loadCalendarList, saveCalendarList, mergeCalendarLists } from "../utils/storage";
+import { loadCalendarList, saveCalendarList, mergeCalendarLists, loadWatchingList, saveWatchingList } from "../utils/storage";
 import WeekNavigation from "../components/WeekNavigation";
 import WeekView from "../components/WeekView";
 import UnwatchedList from "../components/UnwatchedList";
 import EpisodeWatchPopover from "../components/EpisodeWatchPopover";
 import { useEpisodeWatch } from "../hooks/useEpisodeWatch";
+import { fetchMultipleAnimeDetails } from "../utils/anilistApi";
+import { setCachedAnimeDetails, invalidateAnimeCaches } from "../utils/cacheUtils";
+import {
+  withPreservedUserOffset,
+  syncCalendarFromWatching,
+  isAnimeScheduleOverdue,
+} from "../utils/scheduleSync";
 
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -145,6 +152,101 @@ export default function Calendar() {
       syncFromCloud();
     }
   }, [showUnwatched, syncFromCloud]);
+
+  // When AniList delays an episode, local calendar dates go stale.
+  // Refresh overdue titles from AniList and push calendar rows forward.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function refreshDelayedSchedules() {
+      const watching = loadWatchingList() || [];
+      const overdue = watching.filter((a) => isAnimeScheduleOverdue(a));
+
+      const nowSec = Math.floor(Date.now() / 1000);
+      const calendarOverdueIds = new Set();
+      for (const ep of calendarList || []) {
+        if (!ep?.id || typeof ep.airingAt !== "number" || ep.airingAt > nowSec) continue;
+        const anime = watching.find((a) => a.id === ep.id);
+        if (!anime) {
+          // Calendar-only entry with a past date — verify against AniList.
+          calendarOverdueIds.add(ep.id);
+          continue;
+        }
+        if (anime.status === "FINISHED") continue;
+        // Only the current/next episode going past its air time suggests a delay.
+        const nextEp = anime.nextAiringEpisode?.episode ?? anime.episode;
+        if (nextEp != null && ep.episode === nextEp) {
+          calendarOverdueIds.add(ep.id);
+        }
+      }
+
+      const ids = [
+        ...new Set([
+          ...overdue.map((a) => a.id),
+          ...calendarOverdueIds,
+        ]),
+      ].filter(Boolean);
+
+      if (ids.length === 0) return;
+
+      invalidateAnimeCaches(ids);
+
+      try {
+        const freshList = await fetchMultipleAnimeDetails(ids);
+        if (cancelled || !freshList?.length) return;
+
+        const updatedWatching = watching.map((anime) => {
+          const fresh = freshList.find((a) => a?.id === anime.id);
+          if (!fresh) return anime;
+          setCachedAnimeDetails(anime.id, fresh);
+          const offsetFields = withPreservedUserOffset(
+            anime,
+            fresh.airingSchedule?.nodes || anime.fullAiringSchedule,
+            fresh.nextAiringEpisode ?? null
+          );
+          return {
+            ...anime,
+            title: fresh.title || anime.title,
+            coverImage: fresh.coverImage || anime.coverImage,
+            episodes: fresh.episodes ?? anime.episodes,
+            status: fresh.status || anime.status,
+            ...offsetFields,
+          };
+        });
+
+        for (const fresh of freshList) {
+          if (!fresh?.id || updatedWatching.some((a) => a.id === fresh.id)) continue;
+          updatedWatching.push({
+            id: fresh.id,
+            title: fresh.title,
+            coverImage: fresh.coverImage,
+            episodes: fresh.episodes,
+            status: fresh.status,
+            fullAiringSchedule: fresh.airingSchedule?.nodes || [],
+            nextAiringEpisode: fresh.nextAiringEpisode || null,
+            airingAt: fresh.nextAiringEpisode?.airingAt || null,
+            episode: fresh.nextAiringEpisode?.episode || null,
+          });
+        }
+
+        saveWatchingList(updatedWatching);
+
+        setCalendarList((prev) => {
+          const { list, changed } = syncCalendarFromWatching(prev, updatedWatching);
+          if (!changed) return prev;
+          return list;
+        });
+      } catch (err) {
+        console.error("Calendar delay refresh failed:", err);
+      }
+    }
+
+    refreshDelayedSchedules();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, calendarList.length]);
 
   useEffect(() => {
     if (!calendarCloudSyncReadyRef.current) return;
