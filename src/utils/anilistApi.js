@@ -2,6 +2,60 @@ const API_URL = "https://graphql.anilist.co";
 
 let apiRequestCount = 0;
 
+/** Past + upcoming airing nodes (aliases required — can't query the same field twice). */
+const AIRING_SCHEDULE_FIELDS = `
+  pastSchedule: airingSchedule(notYetAired: false, perPage: 50) {
+    nodes {
+      episode
+      airingAt
+    }
+  }
+  upcomingSchedule: airingSchedule(notYetAired: true, perPage: 50) {
+    nodes {
+      episode
+      airingAt
+    }
+  }
+  nextAiringEpisode {
+    episode
+    airingAt
+  }
+`;
+
+/** Normalize aliased schedule fields into a single Media-shaped object. */
+export function normalizeMediaSchedules(media) {
+  if (!media) return media;
+  const past = media.pastSchedule?.nodes || media.airingSchedule?.nodes || [];
+  const upcoming = media.upcomingSchedule?.nodes || [];
+  const byEpisode = new Map();
+
+  for (const node of [...past, ...upcoming]) {
+    if (!node || typeof node.episode !== "number") continue;
+    byEpisode.set(node.episode, { episode: node.episode, airingAt: node.airingAt });
+  }
+
+  if (media.nextAiringEpisode?.episode != null && media.nextAiringEpisode?.airingAt != null) {
+    byEpisode.set(media.nextAiringEpisode.episode, {
+      episode: media.nextAiringEpisode.episode,
+      airingAt: media.nextAiringEpisode.airingAt,
+    });
+  }
+
+  const nodes = Array.from(byEpisode.values()).sort((a, b) => a.episode - b.episode);
+  const {
+    pastSchedule: _past,
+    upcomingSchedule: _upcoming,
+    airingSchedule: _legacy,
+    ...rest
+  } = media;
+
+  return {
+    ...rest,
+    airingSchedule: { nodes },
+    nextAiringEpisode: media.nextAiringEpisode || null,
+  };
+}
+
 // Function to get current count (optional if you want to read it externally)
 export function getApiRequestCount() {
   return apiRequestCount;
@@ -58,22 +112,17 @@ export async function fetchAiringSchedulesByIds(ids) {
   return data.Page.airingSchedules || [];
 }
 
-// Fetch full airing schedule for one anime ID
+// Fetch full airing schedule for one anime ID (past + upcoming)
 export async function fetchFullAiringSchedule(animeId) {
   const query = `
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
-        airingSchedule(notYetAired: false, perPage: 50) {
-          nodes {
-            episode
-            airingAt
-          }
-        }
+        ${AIRING_SCHEDULE_FIELDS}
       }
     }
   `;
   const data = await fetchGraphQL(query, { id: animeId });
-  return data.Media?.airingSchedule?.nodes || [];
+  return normalizeMediaSchedules(data.Media)?.airingSchedule?.nodes || [];
 }
 
 // Search anime by name (autocomplete)
@@ -170,22 +219,13 @@ export async function fetchAnimeWithSchedules(animeId) {
         }
         episodes
         status
-        nextAiringEpisode {
-          episode
-          airingAt
-        }
-        airingSchedule(notYetAired: false, perPage: 50) {
-          nodes {
-            episode
-            airingAt
-          }
-        }
+        ${AIRING_SCHEDULE_FIELDS}
       }
     }
   `;
   const variables = { id: animeId };
   const data = await fetchGraphQL(query, variables);
-  return data?.Media;
+  return normalizeMediaSchedules(data?.Media);
 }
 
 // Optimized: Fetch anime by name with full details in one request
@@ -211,22 +251,13 @@ export async function fetchAnimeByNameWithDetails(searchName) {
           url
           site
         }
-        nextAiringEpisode {
-          episode
-          airingAt
-        }
-        airingSchedule(notYetAired: false, perPage: 50) {
-          nodes {
-            episode
-            airingAt
-          }
-        }
+        ${AIRING_SCHEDULE_FIELDS}
       }
     }
   `;
   
   const data = await fetchGraphQL(query, { search: searchName });
-  return data?.Media;
+  return normalizeMediaSchedules(data?.Media);
 }
 
 // Optimized: Batch fetch multiple anime details in one request
@@ -260,16 +291,7 @@ export async function fetchMultipleAnimeDetails(animeIds) {
               url
               site
             }
-            nextAiringEpisode {
-              episode
-              airingAt
-            }
-            airingSchedule(notYetAired: false, perPage: 50) {
-              nodes {
-                episode
-                airingAt
-              }
-            }
+            ${AIRING_SCHEDULE_FIELDS}
           }
         }
       }
@@ -277,7 +299,7 @@ export async function fetchMultipleAnimeDetails(animeIds) {
     
     const data = await fetchGraphQL(query, { ids: batch });
     if (data?.Page?.media) {
-      results.push(...data.Page.media);
+      results.push(...data.Page.media.map(normalizeMediaSchedules));
     }
   }
   
@@ -312,16 +334,7 @@ export async function fetchAiringSchedulesWithDetails(ids) {
               url
               site
             }
-            nextAiringEpisode {
-              episode
-              airingAt
-            }
-            airingSchedule(notYetAired: false, perPage: 50) {
-              nodes {
-                episode
-                airingAt
-              }
-            }
+            ${AIRING_SCHEDULE_FIELDS}
           }
         }
       }
@@ -329,7 +342,10 @@ export async function fetchAiringSchedulesWithDetails(ids) {
   `;
   
   const data = await fetchGraphQL(query, { ids });
-  return data.Page.airingSchedules || [];
+  return (data.Page.airingSchedules || []).map((sch) => ({
+    ...sch,
+    media: normalizeMediaSchedules(sch.media),
+  }));
 }
 
 export function getCurrentSeasonYear(date = new Date()) {

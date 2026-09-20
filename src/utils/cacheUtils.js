@@ -84,6 +84,15 @@ export function clearAllCaches() {
   });
 }
 
+/** Drop cached details/schedule for specific anime so overdue titles re-fetch. */
+export function invalidateAnimeCaches(animeIds) {
+  for (const id of animeIds || []) {
+    if (id == null) continue;
+    localStorage.removeItem(getCacheKey(id));
+    localStorage.removeItem(getAnimeDetailsCacheKey(id));
+  }
+}
+
 // Get cache stats
 export function getCacheStats() {
   const keys = Object.keys(localStorage);

@@ -40,6 +40,7 @@ import {
   setCachedUpcomingAnime,
   getCachedAnimeDetails,
   setCachedAnimeDetails,
+  invalidateAnimeCaches,
 } from "../utils/cacheUtils";
 import { syncEpisodeWatchForUser } from "../hooks/useEpisodeWatch";
 import { resolveNextAiringEpisode } from "../utils/airingDisplay";
@@ -48,6 +49,12 @@ import {
   LIST_STATUS_OPTIONS,
   DEFAULT_LIST_STATUS,
 } from "../constants/listStatuses";
+import {
+  withPreservedUserOffset,
+  syncCalendarFromWatching,
+  pickAnimeIdsForScheduleRefresh,
+  isAnimeScheduleOverdue,
+} from "../utils/scheduleSync";
 
 // Firestore setup
 const auth = getAuth(app);
@@ -161,47 +168,6 @@ function mergeLists(localList, firestoreList) {
 
   return Array.from(map.values());
 }
-
-/** Re-apply a stored user offset onto fresh AniList schedule times. */
-function withPreservedUserOffset(anime, freshSchedule, freshNext) {
-  const offset = anime.userTimeOffsetSeconds || 0;
-  const schedule = Array.isArray(freshSchedule) ? freshSchedule : (anime.fullAiringSchedule || []);
-  const baseAiringAt = freshNext?.airingAt ?? anime.airingAt ?? null;
-  const baseNext = freshNext ?? anime.nextAiringEpisode ?? null;
-
-  if (!offset) {
-    return {
-      fullAiringSchedule: schedule,
-      airingAt: baseAiringAt,
-      episode: baseNext?.episode ?? anime.episode,
-      nextAiringEpisode: baseNext,
-      userTimeOffsetSeconds: 0,
-      originalAiringAt: undefined,
-      originalFullAiringSchedule: undefined,
-    };
-  }
-
-  const shift = (ts) => (typeof ts === "number" ? ts + offset : ts);
-  const adjustedSchedule = schedule.map((n) => ({
-    ...n,
-    airingAt: shift(n.airingAt),
-  }));
-  const adjustedNext = baseNext
-    ? { ...baseNext, airingAt: shift(baseNext.airingAt) }
-    : null;
-
-  return {
-    fullAiringSchedule: adjustedSchedule,
-    airingAt: shift(baseAiringAt),
-    episode: adjustedNext?.episode ?? anime.episode,
-    nextAiringEpisode: adjustedNext,
-    userTimeOffsetSeconds: offset,
-    originalAiringAt: baseAiringAt,
-    originalFullAiringSchedule: schedule,
-    releaseTimeUpdatedAt: anime.releaseTimeUpdatedAt || 0,
-  };
-}
-
 
 function normalizeAnimeEntry(anime) {
   if (!anime) return anime;
@@ -391,6 +357,7 @@ export default function MainPage() {
   const prevWatchingListIds = useRef(new Set());
   const prevWatchingList = useRef([]);
   const autoRefreshIntervalRef = useRef(null);
+  const autoRefreshAnimeDataRef = useRef(null);
   const calendarCloudSyncReadyRef = useRef(true);
 
   // Debounced functions for better performance
@@ -439,30 +406,18 @@ export default function MainPage() {
   }
 
   function pickAnimeIdsToAutoRefresh(list) {
-    const nowSec = Math.floor(Date.now() / 1000);
-    const ids = [];
-
-    for (const anime of list || []) {
-      if (!anime?.id) continue;
-      if (anime.status === "FINISHED") continue;
-
-      // If we already have fresh cached details (24h TTL in cacheUtils), skip.
-      const cached = getCachedAnimeDetails(anime.id);
-      if (cached) continue;
-
-      const nextAiringAt = anime.nextAiringEpisode?.airingAt || anime.airingAt || null;
-      const hasSchedule = Array.isArray(anime.fullAiringSchedule) && anime.fullAiringSchedule.length > 0;
-
-      // Refresh if we don't have schedule data, or the next airing is soon.
-      const airingSoon =
-        typeof nextAiringAt === "number" && nextAiringAt > nowSec && nextAiringAt - nowSec <= AUTO_REFRESH_SOON_WINDOW_SEC;
-
-      if (!hasSchedule || airingSoon || nextAiringAt == null) {
-        ids.push(anime.id);
-      }
+    const overdueIds = (list || [])
+      .filter((a) => isAnimeScheduleOverdue(a))
+      .map((a) => a.id)
+      .filter(Boolean);
+    if (overdueIds.length > 0) {
+      invalidateAnimeCaches(overdueIds);
     }
 
-    return ids;
+    return pickAnimeIdsForScheduleRefresh(list, {
+      getCachedDetails: getCachedAnimeDetails,
+      soonWindowSec: AUTO_REFRESH_SOON_WINDOW_SEC,
+    });
   }
 
   // Memoized completed anime checker
@@ -567,7 +522,7 @@ export default function MainPage() {
           setUsername(null);
         }
         // On login, sync Firestore + localStorage lists
-        await syncWatchingList(firebaseUser.uid);
+        const syncedList = await syncWatchingList(firebaseUser.uid);
         await syncCalendarList(firebaseUser.uid);
         await syncEpisodeWatchForUser(firebaseUser.uid);
         calendarCloudSyncReadyRef.current = true;
@@ -581,10 +536,13 @@ export default function MainPage() {
           clearInterval(autoRefreshIntervalRef.current);
           autoRefreshIntervalRef.current = null;
         }
-        autoRefreshAnimeData(false);
-        autoRefreshIntervalRef.current = setInterval(() => {
-          autoRefreshAnimeData(false);
-        }, AUTO_REFRESH_INTERVAL_MS);
+        const refresh = autoRefreshAnimeDataRef.current;
+        if (refresh) {
+          refresh(false, syncedList);
+          autoRefreshIntervalRef.current = setInterval(() => {
+            autoRefreshAnimeDataRef.current?.(false);
+          }, AUTO_REFRESH_INTERVAL_MS);
+        }
       } else {
         calendarCloudSyncReadyRef.current = true;
         setUser(null);
@@ -599,6 +557,8 @@ export default function MainPage() {
         setWatchingList(fixedList);
         prevWatchingListIds.current = new Set(fixedList.map((a) => a.id));
         prevWatchingList.current = fixedList;
+        // Detect delays for local-only users too
+        autoRefreshAnimeDataRef.current?.(false, fixedList);
       }
     });
     return unsubscribe;
@@ -629,8 +589,10 @@ export default function MainPage() {
       // Save merged back to Firestore and localStorage so both sides are synced
       saveWatchingList(normalized);
       await saveFirestoreWatchingList(uid, normalized);
+      return normalized;
     } catch (e) {
       console.error("Error syncing watching list:", e);
+      return loadWatchingList() || [];
     }
   }, []);
 
@@ -669,24 +631,10 @@ export default function MainPage() {
     if (user) {
       debounce(() => saveFirestoreWatchingList(user.uid, updatedList), 500)();
     }
-    // Also update calendar with adjusted times
+    // Push delayed / corrected airing times into calendar rows
     setCalendarList((prev) => {
-      const updatedCalendar = prev.map((ep) => {
-        const src = updatedList.find((a) => a.id === ep.id);
-        if (!src) return ep;
-        return {
-          ...ep,
-          airingAt: src.fullAiringSchedule?.find((n) => n.episode === ep.episode)?.airingAt || ep.airingAt,
-          title: {
-            ...src.title,
-            customTitle: src.customTitle || ep.title?.customTitle || undefined
-          },
-          coverImage: src.coverImage,
-          favorited: src.favorited || false,
-          siteUrl: src.siteUrl || ep.siteUrl,
-          externalLinks: src.externalLinks || ep.externalLinks || [],
-        };
-      });
+      const { list: updatedCalendar, changed } = syncCalendarFromWatching(prev, updatedList);
+      if (!changed) return prev;
       if (debouncedSaveCalendarList.current) {
         debouncedSaveCalendarList.current(updatedCalendar);
       }
@@ -697,26 +645,14 @@ export default function MainPage() {
     });
   }, [user]);
 
-  // Auto refresh: use the shared applyUpdateAndPersist helper
-  const autoRefreshAnimeData = useCallback(async (force = false) => {
-    if (!user) return;
-    if (!force && !shouldAutoRefreshNow()) return;
-    if (!watchingList?.length) return;
+  // Auto refresh schedules from AniList; pushes delayed episode dates forward.
+  // Optional listOverride avoids stale closure right after login sync.
+  const autoRefreshAnimeData = useCallback(async (force = false, listOverride = null) => {
+    const sourceList = listOverride || watchingList;
+    if (!sourceList?.length) return;
 
-    const idsToRefresh = pickAnimeIdsToAutoRefresh(watchingList);
-    if (idsToRefresh.length === 0) {
-      markAutoRefreshRun();
-      return;
-    }
-
-    try {
-      const updatedAnimeData = await fetchMultipleAnimeDetails(idsToRefresh);
-      if (!updatedAnimeData?.length) {
-        markAutoRefreshRun();
-        return;
-      }
-
-      const updatedList = watchingList.map((anime) => {
+    const applyFreshDetails = (list, updatedAnimeData) => {
+      const updatedList = list.map((anime) => {
         const freshData = updatedAnimeData.find((a) => a?.id === anime.id);
         if (!freshData) return anime;
 
@@ -724,9 +660,9 @@ export default function MainPage() {
 
         const preservedSiteUrl = anime.siteUrl || freshData.siteUrl;
         const preservedExternalLinks =
-          (anime.externalLinks && anime.externalLinks.length > 0)
+          anime.externalLinks?.length > 0
             ? anime.externalLinks
-            : (freshData.externalLinks || []);
+            : freshData.externalLinks || [];
 
         const offsetFields = withPreservedUserOffset(
           anime,
@@ -747,14 +683,46 @@ export default function MainPage() {
         });
       });
 
-      applyUpdateAndPersist(updatedList);
+      return fixAiringTimes(updatedList);
+    };
+
+    // Always refresh overdue titles (likely delayed), even inside the 3h rate limit.
+    if (!force && !shouldAutoRefreshNow()) {
+      const overdueOnly = sourceList.filter((a) => isAnimeScheduleOverdue(a));
+      if (overdueOnly.length === 0) return;
+      invalidateAnimeCaches(overdueOnly.map((a) => a.id));
+      try {
+        const updatedAnimeData = await fetchMultipleAnimeDetails(overdueOnly.map((a) => a.id));
+        if (!updatedAnimeData?.length) return;
+        applyUpdateAndPersist(applyFreshDetails(sourceList, updatedAnimeData));
+      } catch (err) {
+        console.error("Overdue schedule refresh failed:", err);
+      }
+      return;
+    }
+
+    const idsToRefresh = pickAnimeIdsToAutoRefresh(sourceList);
+    if (idsToRefresh.length === 0) {
+      markAutoRefreshRun();
+      return;
+    }
+
+    try {
+      const updatedAnimeData = await fetchMultipleAnimeDetails(idsToRefresh);
+      if (!updatedAnimeData?.length) {
+        markAutoRefreshRun();
+        return;
+      }
+
+      applyUpdateAndPersist(applyFreshDetails(sourceList, updatedAnimeData));
       markAutoRefreshRun();
     } catch (err) {
       console.error("Auto refresh failed:", err);
-      // Don't spam errors in UI for background refreshes.
       markAutoRefreshRun();
     }
-  }, [user, watchingList, applyUpdateAndPersist]);
+  }, [watchingList, applyUpdateAndPersist]);
+
+  autoRefreshAnimeDataRef.current = autoRefreshAnimeData;
 
   // On mount: if no user logged in yet, load localStorage list
   useEffect(() => {
@@ -857,11 +825,15 @@ export default function MainPage() {
             if (scheduleData) {
               // Cache the full anime details for future use
               setCachedAnimeDetails(anime.id, scheduleData.media);
-              
-              return {
+
+              const offsetFields = withPreservedUserOffset(
+                anime,
+                scheduleData.media.airingSchedule?.nodes || anime.fullAiringSchedule,
+                scheduleData.media.nextAiringEpisode ?? scheduleData.nextAiringEpisode ?? null
+              );
+
+              return normalizeAnimeEntry({
                 ...anime,
-                episode: scheduleData.episode ?? anime.episode,
-                airingAt: scheduleData.airingAt ?? anime.airingAt,
                 // Update with fresh data if available
                 title: scheduleData.media.title || anime.title,
                 coverImage: scheduleData.media.coverImage || anime.coverImage,
@@ -870,24 +842,40 @@ export default function MainPage() {
                 siteUrl: scheduleData.media.siteUrl || anime.siteUrl,
                 genres: scheduleData.media.genres || anime.genres,
                 externalLinks: scheduleData.media.externalLinks || anime.externalLinks || [],
-                fullAiringSchedule: scheduleData.media.airingSchedule?.nodes || anime.fullAiringSchedule,
-                nextAiringEpisode: scheduleData.media.nextAiringEpisode || anime.nextAiringEpisode,
-              };
+                ...offsetFields,
+              });
             }
             return anime;
           });
-          
+
+          const fixed = fixAiringTimes(updated);
+
           // Use debounced save to prevent excessive writes
           if (debouncedSaveWatchingList.current) {
-            debouncedSaveWatchingList.current(updated);
+            debouncedSaveWatchingList.current(fixed);
           }
-          
+
           // Also update Firestore if logged in (debounced)
           if (user && !isCancelled) {
-            debounce(() => saveFirestoreWatchingList(user.uid, updated), 500)();
+            debounce(() => saveFirestoreWatchingList(user.uid, fixed), 500)();
           }
-          
-          return updated;
+
+          // Push any delayed dates into the calendar
+          if (!isCancelled) {
+            setCalendarList((prev) => {
+              const { list, changed } = syncCalendarFromWatching(prev, fixed);
+              if (!changed) return prev;
+              if (debouncedSaveCalendarList.current) {
+                debouncedSaveCalendarList.current(list);
+              }
+              if (user) {
+                debounce(() => saveFirestoreCalendarList(user.uid, list), 500)();
+              }
+              return list;
+            });
+          }
+
+          return fixed;
         });
       } catch (err) {
         if (!isCancelled) {
@@ -1370,22 +1358,7 @@ export default function MainPage() {
       
       // Update calendar list with fresh data
       setCalendarList((prev) => {
-        const updatedCalendar = prev.map((ep) => {
-          const anime = normalizedList.find((a) => a.id === ep.id);
-          if (!anime) return ep;
-          
-          // Find the matching episode in the schedule
-          const scheduleEp = anime.fullAiringSchedule?.find((s) => s.episode === ep.episode);
-          return {
-            ...ep,
-            airingAt: scheduleEp?.airingAt || ep.airingAt,
-            title: anime.title,
-            coverImage: anime.coverImage,
-            favorited: anime.favorited || false,
-            siteUrl: anime.siteUrl || ep.siteUrl,
-            externalLinks: anime.externalLinks || ep.externalLinks || [],
-          };
-        });
+        const { list: updatedCalendar } = syncCalendarFromWatching(prev, normalizedList);
         if (debouncedSaveCalendarList.current) {
           debouncedSaveCalendarList.current(updatedCalendar);
         }
